@@ -23,12 +23,14 @@ import {
 } from '../keys/keys.ts';
 import { getCounter, monthKey, RateLimiter } from '../keys/limits.ts';
 import { getProject, listProjects, updateProject, type Project } from '../keys/projects.ts';
-import { confirmSetup, setupStatus, setupView } from '../keys/setup.ts';
+import { confirmSetup, setupStatus, setupView, setupWindowOpen } from '../keys/setup.ts';
 import { audit } from '../security/audit.ts';
+import { newId } from '../security/crypto.ts';
 import { redactDeep, redactText } from '../security/redact.ts';
 import { deleteWebhookTool, listWebhookTools, ToolInputError, upsertWebhookTool } from '../tools/registry.ts';
 import { WebhookError } from '../tools/webhook.ts';
-import { landingPage, setupPage } from './pages.ts';
+import { docsPage, openApiSpec } from './openapi.ts';
+import { demoOffPage, demoPage, landingPage, setupPage } from './pages.ts';
 import { widgetScript } from './widget.ts';
 
 export interface ServerDeps extends AgentDeps {
@@ -110,12 +112,22 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
     originCache = { at: 0, list: [] };
   };
 
+  // Requests from Scout's own pages (setup, demo) are always allowed, even if
+  // PUBLIC_URL was not set.
+  const sameHost = (origin: string, req: FastifyRequest) => {
+    try {
+      return !origin.includes('*') && new URL(origin).host === req.headers.host;
+    } catch {
+      return false;
+    }
+  };
+
   app.addHook('onRequest', async (req, reply) => {
     reply.header('x-content-type-options', 'nosniff');
     reply.header('referrer-policy', 'no-referrer');
     const origin = req.headers.origin;
     if (!origin) return;
-    const ok = originAllowed(await allowedOrigins(), origin);
+    const ok = sameHost(origin, req) || originAllowed(await allowedOrigins(), origin);
     if (ok) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'Origin');
@@ -217,9 +229,35 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
 
   app.post('/setup/confirm', async (req) => {
     const origin = req.headers.origin;
-    if (origin && origin !== normalizeOrigin(config.publicUrl)) throw new HttpError(403, 'forbidden', 'Confirm setup from the Scout setup page.');
+    if (origin && origin !== normalizeOrigin(config.publicUrl) && !sameHost(origin, req)) throw new HttpError(403, 'forbidden', 'Confirm setup from the Scout setup page.');
     return { ok: await confirmSetup(db) };
   });
+
+  // ---------- demo with sample data (setup hour, or DEMO_MODE=true) ----------
+  const demoAvailable = async () => config.demoMode || (await setupWindowOpen(db));
+  app.get('/demo', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8').header('cache-control', 'no-store');
+    if (!(await demoAvailable())) return reply.code(404).send(demoOffPage());
+    const project = await getProject(db, deps.defaultProjectId);
+    return reply.send(demoPage(project?.settings.agentName || config.defaultAgentName));
+  });
+
+  app.post('/demo/token', async (req, reply) => {
+    if (!(await demoAvailable())) throw new HttpError(404, 'demo_off', 'The demo is turned off.');
+    const origin = req.headers.origin;
+    if (origin && origin !== normalizeOrigin(config.publicUrl) && !sameHost(origin, req)) throw new HttpError(403, 'forbidden', 'The demo token is only for the Scout demo page.');
+    limit(`demo-token:${req.ip}`, 10, 'demo requests');
+    const cookie = /(?:^|;\s*)scout_demo=([A-Za-z0-9]{16,40})/.exec(req.headers.cookie ?? '')?.[1];
+    const visitor = cookie ?? newId('v').slice(2);
+    if (!cookie) {
+      reply.header('set-cookie', `scout_demo=${visitor}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${config.publicUrl.startsWith('https:') ? '; Secure' : ''}`);
+    }
+    return mintUserToken(deps.secrets, deps.defaultProjectId, `demo:${visitor}`, 900);
+  });
+
+  app.get('/favicon.ico', async (_req, reply) => reply.code(204).header('cache-control', 'public, max-age=86400').send());
+  app.get('/openapi.json', async () => openApiSpec(config.publicUrl, config.version));
+  app.get('/docs', async (_req, reply) => reply.type('text/html; charset=utf-8').send(docsPage(config.publicUrl)));
 
   app.get('/scout.js', async (_req, reply) =>
     reply.type('application/javascript; charset=utf-8').header('cache-control', 'public, max-age=300').header('access-control-allow-origin', '*').send(widgetScript(config.publicUrl)),

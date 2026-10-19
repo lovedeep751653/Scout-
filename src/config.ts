@@ -40,6 +40,8 @@ export interface Config {
   newAppKeyOnStart: boolean;
   setupWindowMinutes: number;
   allowedOrigins: string[];
+  demoMode: boolean;
+  demoDailyMessages: number;
   defaultAgentName: string;
   primary: ProviderSettings;
   fallback: ProviderSettings | null;
@@ -87,11 +89,12 @@ const PROVIDER_ALIASES: Record<string, ProviderName> = {
   mock: 'mock',
 };
 
-// Ollama: Qwen3.5 4B (Apache-2.0), chosen after testing tool calling, answer format and
-// Hindi on a 4-core CPU; see docs/ARCHITECTURE.md. The cloud defaults are only used if
-// the owner explicitly switches provider (they need a paid or free-tier API key).
+// Ollama: the exact Qwen3.5 4B Q4_K_M file that was tested end to end with Scout
+// (tool calling, answer cards, English/Hindi/Hinglish) on a 4-core CPU; see
+// docs/ARCHITECTURE.md. "qwen3.5:4b" from the Ollama library is an alternative.
+// The cloud defaults are only used if the owner explicitly switches provider.
 export const DEFAULT_MODELS: Record<ProviderName, string> = {
-  ollama: 'qwen3.5:4b',
+  ollama: 'hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M',
   anthropic: 'claude-haiku-5-5',
   gemini: 'gemini-flash-latest',
   groq: 'llama-3.3-70b-versatile',
@@ -184,6 +187,23 @@ function originList(raw: string): string[] {
     .filter(Boolean);
 }
 
+// Hosting platforms announce the public address in their own variables, so the owner
+// does not have to type it.
+function detectPublicUrl(env: Env, port: number): string {
+  const explicit = str(env, 'PUBLIC_URL');
+  const url =
+    explicit ||
+    str(env, 'RENDER_EXTERNAL_URL') ||
+    (str(env, 'SPACE_HOST') && `https://${str(env, 'SPACE_HOST')}`) ||
+    (str(env, 'RAILWAY_PUBLIC_DOMAIN') && `https://${str(env, 'RAILWAY_PUBLIC_DOMAIN')}`) ||
+    (str(env, 'FLY_APP_NAME') && `https://${str(env, 'FLY_APP_NAME')}.fly.dev`) ||
+    (str(env, 'KOYEB_PUBLIC_DOMAIN') && `https://${str(env, 'KOYEB_PUBLIC_DOMAIN')}`) ||
+    (str(env, 'CODESPACE_NAME') && str(env, 'GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN') &&
+      `https://${str(env, 'CODESPACE_NAME')}-${port}.${str(env, 'GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN')}`) ||
+    `http://localhost:${port}`;
+  return url.replace(/\/+$/, '');
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const dataDir = path.resolve(str(env, 'DATA_DIR', './data'));
   const port = int(env, 'PORT', 3000, 1, 65535);
@@ -195,7 +215,7 @@ export function loadConfig(env: Env = process.env): Config {
     version: '0.2.0',
     port,
     host: str(env, 'HOST', '0.0.0.0'),
-    publicUrl: str(env, 'PUBLIC_URL', str(env, 'SPACE_HOST') ? `https://${str(env, 'SPACE_HOST')}` : `http://localhost:${port}`).replace(/\/+$/, ''),
+    publicUrl: detectPublicUrl(env, port),
     trustProxy: bool(env, 'TRUST_PROXY', true),
     logLevel: str(env, 'LOG_LEVEL', 'info'),
     dataDir,
@@ -207,6 +227,8 @@ export function loadConfig(env: Env = process.env): Config {
     newAppKeyOnStart: bool(env, 'SCOUT_NEW_APP_KEY', false),
     setupWindowMinutes: int(env, 'SETUP_WINDOW_MINUTES', 60, 5, 24 * 60),
     allowedOrigins: originList(str(env, 'SCOUT_ALLOWED_ORIGINS')),
+    demoMode: bool(env, 'DEMO_MODE', false),
+    demoDailyMessages: int(env, 'DEMO_DAILY_MESSAGES', 300, 0, 100_000),
     defaultAgentName: str(env, 'AGENT_NAME', 'Scout').slice(0, 40),
     primary,
     fallback: providerSettings(env, 'FALLBACK_'),

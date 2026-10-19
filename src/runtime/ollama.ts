@@ -102,6 +102,8 @@ export class OllamaRuntime {
         OLLAMA_MODELS: this.config.ollama.modelsDir,
         OLLAMA_KEEP_ALIVE: this.config.ollama.keepAlive,
         OLLAMA_CONTEXT_LENGTH: String(this.config.ollama.contextLength),
+        // Keeps everything on this server: no Ollama cloud models or calls to ollama.com.
+        OLLAMA_NO_CLOUD: process.env.OLLAMA_NO_CLOUD ?? '1',
         OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL ?? '1',
         OLLAMA_MAX_LOADED_MODELS: process.env.OLLAMA_MAX_LOADED_MODELS ?? '1',
       },

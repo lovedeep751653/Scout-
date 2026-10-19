@@ -1,6 +1,7 @@
 import type { Config } from '../config.ts';
 import type { Db } from '../db/index.ts';
-import { checkUsageLimits, recordUsage, userSubject, QueueFullError, type ChatQueue } from '../keys/limits.ts';
+import { checkUsageLimits, dayKey, getCounter, recordUsage, userSubject, QueueFullError, type ChatQueue } from '../keys/limits.ts';
+import { isDemoUser } from '../connectors/loginlens.ts';
 import { getProject } from '../keys/projects.ts';
 import { costMicroUsd, priceFor } from '../providers/pricing.ts';
 import { ProviderError, type GenerateResult, type Message, type ModelProvider, type Part, type Usage } from '../providers/types.ts';
@@ -82,8 +83,34 @@ export function filterCommentary(text: string, cards: Card[]): string {
   const no = presence.some((c) => c.type === 'presence' && c.answer === 'not_found');
   if (yes && no) return text.trim();
   const pieces = text.split(/(?<=[.!?।])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
-  const kept = pieces.filter((s) => (yes ? !NEGATIVE.test(s) && !/^(no|nahi|नहीं)\b/i.test(s) : !POSITIVE.test(s) && !/^(yes|haan|हाँ)\b/i.test(s)));
+  const startsNo = /^(no|nahi|nahin|नहीं)(?![\p{L}\p{M}\p{N}])/iu;
+  const startsYes = /^(yes|haan|han|हाँ|हां)(?![\p{L}\p{M}\p{N}])/iu;
+  const kept = pieces.filter((s) => (yes ? !NEGATIVE.test(s) && !startsNo.test(s) : !POSITIVE.test(s) && !startsYes.test(s)));
   return kept.join(' ').trim();
+}
+
+function sentences(text: string): string[] {
+  return text.split(/(?<=[.!?।])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+}
+
+// Drops sentences that mention a number or date found nowhere in the tool data, the
+// cards or the user's message. Small models sometimes invent dates and counts.
+export function groundNumbers(text: string, grounding: string): string {
+  const known = new Set(grounding.replace(/T\d{2}:\d{2}:\d{2}(\.\d+)?Z?/g, ' ').match(/\d{2,}/g) ?? []);
+  const norm = (n: string) => n.replace(/^0+(?=\d)/, '');
+  const knownNorm = new Set([...known].map(norm));
+  return sentences(text)
+    .filter((s) => (s.match(/\d{2,}/g) ?? []).every((n) => known.has(n) || knownNorm.has(norm(n))))
+    .join(' ');
+}
+
+export function limitSentences(text: string, max: number, maxChars: number): string {
+  let out = '';
+  for (const s of sentences(text).slice(0, max)) {
+    if ((out + ' ' + s).trim().length > maxChars) break;
+    out = (out + ' ' + s).trim();
+  }
+  return out;
 }
 
 function friendlyProviderError(err: ProviderError, lang: Lang): { code: StopReason; text: string } {
@@ -118,6 +145,10 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
   if (input.sessionId && !session) throw new AgentInputError('session_not_found', 'This conversation was not found. Start a new chat.');
 
   const subject = userSubject(who.projectId, who.userId);
+  const demo = isDemoUser(who.userId);
+  if (demo && (await getCounter(db, `demo:${who.projectId}`, dayKey())).requests >= config.demoDailyMessages) {
+    return emptyResult(lang, session?.id ?? null, t('busy', lang), 'limit');
+  }
   const breach = await checkUsageLimits(db, { userSubject: subject, keyId: who.keyId, keyBudget: who.keyBudget }, config.limits);
   if (breach) {
     const key = breach === 'daily_messages' ? 'daily_limit' : breach === 'monthly_tokens' ? 'monthly_limit' : 'key_budget';
@@ -152,6 +183,7 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
       await recordUsage(db, { projectId: who.projectId, userSubject: subject, keyId: who.keyId }, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, costMicroUsd: costMicroUsd(u, price) });
     };
     await recordUsage(db, { projectId: who.projectId, userSubject: subject, keyId: who.keyId }, { requests: 1 });
+    if (demo) await recordUsage(db, { projectId: who.projectId, userSubject: `demo:${who.projectId}`, keyId: null }, { requests: 1 });
 
     // Memory: older turns are folded into a short summary once the chat gets long.
     let history = await loadMessages(db, session.id, session.summaryUpto);
@@ -170,7 +202,7 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
       }
     }
 
-    const tools = await deps.registry.forProject(db, project, deps.secrets, config);
+    const tools = await deps.registry.forProject(db, project, deps.secrets, config, { demo });
     const specs = tools.map(toSpec);
     const system = buildSystemPrompt({
       agentName: project.settings.agentName || config.defaultAgentName,
@@ -180,6 +212,7 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
       today: new Date().toISOString().slice(0, 10),
       summary: summaryText,
       hasLoginLensTools: tools.some((tl) => tl.name.startsWith('loginlens_')),
+      demo,
     });
 
     const userMsg: Message = { role: 'user', parts: [{ type: 'text', text: clean.text }] };
@@ -190,6 +223,7 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
     const used = new Set<string>();
     const memo = new Map<string, string>();
     const commentary: string[] = [];
+    const grounding: string[] = [clean.text];
     let streamedAny = false;
     let stopped: StopReason = null;
     let lastAssistant: Message | null = null;
@@ -217,7 +251,16 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
       // After a card is shown, commentary is held back and checked before the user sees it.
       const holdText = cards.length > 0;
       try {
-        for await (const ev of deps.provider.stream({ system, messages: working, tools: specs, toolChoice: last || forceAnswer ? 'none' : 'auto', signal: runSignal })) {
+        const request = {
+          system,
+          messages: working,
+          tools: specs,
+          toolChoice: (last || forceAnswer ? 'none' : 'auto') as 'none' | 'auto',
+          // After a card only a sentence or two of commentary is used, so stop early.
+          ...(holdText ? { maxTokens: 300 } : {}),
+          signal: runSignal,
+        };
+        for await (const ev of deps.provider.stream(request)) {
           if (ev.type === 'text') {
             stepText += ev.text;
             if (!holdText) {
@@ -272,6 +315,7 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
       }
       for (const c of result.toolCalls) used.add(c.name);
       const outcome = await runToolCalls(result.toolCalls, tools, ctx, emit, memo);
+      for (const p of outcome.parts) if (p.type === 'tool_result') grounding.push(p.content);
       cards.push(...outcome.cards);
       pending.push(...outcome.pending);
       const resultMsg: Message = { role: 'user', parts: outcome.parts };
@@ -282,7 +326,13 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
 
     // The reply the user sees: verified cards first, then the model's checked commentary.
     const cardTexts = cards.map((c) => renderCard(c, lang));
-    const talk = cards.length ? filterCommentary(commentary.slice(-1).join('\n\n'), cards) : commentary.join('\n\n');
+    grounding.push(...cardTexts);
+    // Yes/No cards already hold the full answer and proof, so commentary stays short.
+    // Count cards only hold a number, so the model's list is the useful part.
+    const hasPresence = cards.some((c) => c.type === 'presence');
+    let talk = cards.length ? filterCommentary(commentary.slice(-1).join('\n\n'), cards) : commentary.join('\n\n');
+    if (hasPresence) talk = limitSentences(talk, 2, 360);
+    if (used.size > 0 && talk) talk = groundNumbers(talk, grounding.join('\n'));
     if (cards.length && talk) emit({ type: 'delta', text: `${streamedAny ? '\n\n' : ''}${talk}` });
     const text = [notices.join('\n\n'), talk].filter(Boolean).join('\n\n');
     const reply = [notices.join('\n\n'), ...cardTexts, talk].filter(Boolean).join('\n\n') || t('error', lang);

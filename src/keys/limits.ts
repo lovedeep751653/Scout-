@@ -14,11 +14,21 @@ export class RateLimiter {
     const start = now - (now % this.windowMs);
     if (!w || start - w.start >= 2 * this.windowMs) w = { start, count: 0, prev: 0 };
     else if (start !== w.start) w = { start, count: 0, prev: w.count };
-    const weight = 1 - (now - start) / this.windowMs;
+    const W = this.windowMs;
+    const weight = 1 - (now - start) / W;
     const used = w.prev * weight + w.count;
     this.windows.set(id, w);
     if (used + 1 > limit) {
-      return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((start + this.windowMs - now) / 1000)) };
+      // Earliest moment the weighted count leaves room for one more hit, so a client
+      // that waits exactly Retry-After seconds is let through.
+      let waitMs: number;
+      if (limit >= 1 && w.count + 1 <= limit && w.prev > 0) {
+        waitMs = start + (1 - (limit - w.count - 1) / w.prev) * W - now;
+      } else {
+        const into = limit >= 1 ? Math.max(0, 1 - (limit - 1) / Math.max(1, w.count)) : 1;
+        waitMs = start + W - now + into * W;
+      }
+      return { allowed: false, retryAfterSec: Math.max(1, Math.ceil(waitMs / 1000)) };
     }
     w.count += 1;
     if (this.windows.size > 50_000) this.prune(now);
@@ -48,6 +58,7 @@ export class ChatQueue {
 
   // Resolves with a release function. Rejects with QueueFullError when the line is full.
   async enter(signal?: AbortSignal, onWait?: (position: number) => void): Promise<() => void> {
+    if (signal?.aborted) throw new Error('aborted');
     if (this.running < this.maxRunning) {
       this.running++;
       return this.releaser();

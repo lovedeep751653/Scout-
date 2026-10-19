@@ -1,0 +1,14 @@
+{
+  "name": "Scout (free test space)",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "hostRequirements": { "memory": "8gb" },
+  "postCreateCommand": "npm install && curl -fsSL https://ollama.com/install.sh | sudo sh",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "Scout", "onAutoForward": "notify" }
+  },
+  "containerEnv": {
+    "DEMO_MODE": "true",
+    "OLLAMA_NO_CLOUD": "1"
+  }
+}

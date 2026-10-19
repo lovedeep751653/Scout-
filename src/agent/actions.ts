@@ -1,3 +1,4 @@
+import { isDemoUser } from '../connectors/loginlens.ts';
 import { getProject } from '../keys/projects.ts';
 import { resolveAction } from '../tools/registry.ts';
 import { isLang, t } from './language.ts';
@@ -15,7 +16,7 @@ export interface ActionOutcome {
 export async function resolvePending(deps: AgentDeps, who: Principal, actionId: string, decision: 'confirm' | 'cancel'): Promise<ActionOutcome> {
   const project = await getProject(deps.db, who.projectId);
   if (!project) return { ok: false, status: 'not_found', message: 'This app is not set up in Scout.' };
-  const tools = await deps.registry.forProject(deps.db, project, deps.secrets, deps.config);
+  const tools = await deps.registry.forProject(deps.db, project, deps.secrets, deps.config, { demo: isDemoUser(who.userId) });
   const r = await resolveAction(
     { db: deps.db, config: deps.config, secrets: deps.secrets, projectId: who.projectId, userId: who.userId, keyId: who.keyId, signal: AbortSignal.timeout(deps.config.toolTimeoutMs + 5000) },
     actionId,

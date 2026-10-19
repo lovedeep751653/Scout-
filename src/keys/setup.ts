@@ -92,6 +92,11 @@ export async function confirmSetup(db: Db): Promise<boolean> {
   return true;
 }
 
+export async function setupWindowOpen(db: Db): Promise<boolean> {
+  const rec = await read(db);
+  return !!rec && rec.status === 'pending' && (rec.windowEndsAt ?? 0) > Date.now();
+}
+
 export async function setupStatus(db: Db): Promise<SetupRecord['status'] | 'none'> {
   return (await read(db))?.status ?? 'none';
 }

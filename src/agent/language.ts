@@ -2,12 +2,14 @@ export type Lang = 'en' | 'hi' | 'hinglish';
 
 // Common Hindi words written in English letters. Two hits (or one in a very short
 // message) mark the message as Hinglish.
+// Words that are also common English words ("the", "main", "par", "ha", "ye") are left
+// out, so ordinary English questions are never mistaken for Hinglish.
 const HINGLISH = new Set(
   (
-    'hai hain h kya kyaa kya? mera meri mere mujhe mujhko kitne kitna kitni kaun kaunsa kaunse kaise kab kahan kidhar nahi nahin nhi haan ha ' +
-    'ka ki ke ko se par pe aur bhi sab kar karo karna karein batao bataiye bata dikhao dikhaiye chahiye wala wali wale abhi kuch koi aap tum hum ' +
-    'apna apne raha rahi rahe tha thi the hoga hogi kiya kiye diya liya mein main yeh ye woh wo kyun kyon jab tab agar lekin ya phir dobara ' +
-    'purana purane naya naye kitni baar saare sare bahut thoda sirf'
+    'hai hain kya kyaa mera meri mere mujhe mujhko kitne kitna kitni kaun kaunsa kaunse kaise kab kahan kidhar nahi nahin nhi haan ' +
+    'ka ki ke ko se pe aur bhi sab karo karna karein batao bataiye bata dikhao dikhaiye chahiye wala wali wale abhi kuch koi aap tum hum ' +
+    'apna apne raha rahi rahe tha thi hoga hogi kiya kiye diya liya mein yeh woh kyun kyon jab tab agar lekin phir dobara ' +
+    'purana purane naya naye baar saare sare bahut thoda sirf'
   ).split(' '),
 );
 

@@ -73,6 +73,7 @@
     '.action{border:1px dashed var(--brand);border-radius:12px;padding:10px;background:var(--bg);font-size:14px}',
     '.action .row{display:flex;gap:8px;margin-top:8px}',
     '.btn{border:0;border-radius:10px;padding:9px 14px;font-size:14px;cursor:pointer;background:var(--brand);color:#fff;min-height:40px}.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}',
+    '.sendb{display:grid;place-items:center;min-width:46px}.sendb svg{width:20px;height:20px}.md p{margin:0 0 6px}.md ul{margin:4px 0 6px;padding-left:18px}.md li{margin:2px 0}',
     '.chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 8px;background:var(--panel)}',
     '.chip{border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:999px;padding:7px 12px;font-size:13px;cursor:pointer}',
     'form{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line);background:var(--bg)}',
@@ -123,6 +124,26 @@
   applyTheme();
 
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+  // Tiny, safe formatter for the AI's text: **bold** and "- " / "* " bullet lines.
+  // It only creates DOM nodes (never innerHTML), so text from the AI cannot inject HTML.
+  function inline(parent, text) {
+    var parts = String(text).split(/(\*\*[^*]+\*\*)/g);
+    parts.forEach(function (part) {
+      var m = /^\*\*([^*]+)\*\*$/.exec(part);
+      if (m) parent.appendChild(el('b', null, m[1])); else if (part) parent.appendChild(document.createTextNode(part.replace(/\*\*/g, '')));
+    });
+  }
+  function rich(text) {
+    var box = el('div', 'md'); var list = null;
+    String(text).split('\n').forEach(function (line) {
+      var b = /^\s*[-*•]\s+(.*)$/.exec(line);
+      if (b) { if (!list) { list = el('ul'); box.appendChild(list); } var li = el('li'); inline(li, b[1]); list.appendChild(li); return; }
+      list = null;
+      if (line.trim()) { var para = el('p'); inline(para, line); box.appendChild(para); }
+    });
+    return box;
+  }
   function scroll() { log.scrollTop = log.scrollHeight; }
   function sys(text, cls) { var e = el('div', cls || 'sys', text); log.appendChild(e); scroll(); return e; }
 
@@ -243,7 +264,7 @@
             bubble.innerHTML = '';
             var reply = data.reply || '';
             (data.card_texts || []).forEach(function (txt, i) { var c = renderCard((data.cards || [])[i] || {}); c.textContent = txt; bubble.appendChild(c); });
-            if (data.text) bubble.appendChild(el('div', null, data.text));
+            if (data.text) bubble.appendChild(rich(data.text));
             botTools(bubble, function () { return reply; }, data.message_id);
             (data.pending_actions || []).forEach(actionBox);
             setStatus();

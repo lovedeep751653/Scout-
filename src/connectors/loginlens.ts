@@ -2,6 +2,7 @@ import { countCard, presenceCard } from '../agent/cards.ts';
 import type { Config } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { randomBase62, type Secrets } from '../security/crypto.ts';
+import { sampleAnswer } from './sample.ts';
 import type { ToolDefinition } from '../tools/registry.ts';
 import { callWebhook, checkWebhookUrl } from '../tools/webhook.ts';
 
@@ -63,7 +64,7 @@ const SPECS: Spec[] = [
     properties: { service: str('Service name or domain, e.g. "netflix" or "netflix.com"', 120) },
     required: ['service'],
     label: 'Checking your emails',
-    card: (_args, data, staleDays) => presenceCard(data, staleDays),
+    card: (args, data, staleDays) => presenceCard(data, staleDays, Date.now(), typeof args.service === 'string' ? args.service : ''),
   },
   {
     name: 'loginlens_search_services',
@@ -130,7 +131,9 @@ const SPECS: Spec[] = [
 
 export const LOGINLENS_TOOL_NAMES = SPECS.map((s) => s.name);
 
-export function loginLensTools(connector: { url: string; secretEnc: string }, secrets: Secrets, config: Config, projectId: string): ToolDefinition[] {
+export const isDemoUser = (userId: string) => userId.startsWith('demo:');
+
+export function loginLensTools(connector: { url: string; secretEnc: string } | null, secrets: Secrets, config: Config, projectId: string): ToolDefinition[] {
   return SPECS.map((s) => ({
     name: s.name,
     description: s.description,
@@ -141,6 +144,8 @@ export function loginLensTools(connector: { url: string; secretEnc: string }, se
     summarize: s.summarize,
     card: s.card,
     handler: async (args, ctx) => {
+      if (isDemoUser(ctx.userId)) return sampleAnswer(s.name, args);
+      if (!connector) throw new Error('LoginLens is not connected to Scout yet, so account data cannot be read.');
       const result = await callWebhook({
         url: connector.url,
         secret: secrets.decrypt(connector.secretEnc, `connector:${projectId}:${CONNECTOR}`),

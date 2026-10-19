@@ -1,0 +1,30 @@
+# For your own server (VPS or Oracle Cloud). Start with:  docker compose up -d --build
+# Then open https://SCOUT_DOMAIN/setup within 60 minutes to get the Scout app key.
+services:
+  scout:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: https://${SCOUT_DOMAIN:?Set SCOUT_DOMAIN, for example 1-2-3-4.sslip.io}
+      DEMO_MODE: ${DEMO_MODE:-false}
+    volumes:
+      - scout-data:/data
+    expose:
+      - "7860"
+
+  # Caddy gets a free HTTPS certificate automatically (Let's Encrypt).
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${SCOUT_DOMAIN} --to scout:7860
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+    depends_on:
+      - scout
+
+volumes:
+  scout-data:
+  caddy-data:

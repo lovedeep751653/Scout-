@@ -44,9 +44,11 @@ export function validate(value: unknown, schema: JsonSchema, path = 'input'): st
   }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
-    for (const req of schema.required ?? []) if (!(req in obj) || obj[req] === undefined) errors.push(`${path}.${req} is required`);
+    // Object.hasOwn, not `in` or plain indexing: keys such as "constructor" or
+    // "__proto__" must not match inherited object members.
+    for (const req of schema.required ?? []) if (!Object.hasOwn(obj, req) || obj[req] === undefined) errors.push(`${path}.${req} is required`);
     for (const [k, v] of Object.entries(obj)) {
-      const prop = schema.properties?.[k];
+      const prop = schema.properties && Object.hasOwn(schema.properties, k) ? schema.properties[k] : undefined;
       if (prop) errors.push(...validate(v, prop, `${path}.${k}`));
       else if (schema.additionalProperties === false) errors.push(`${path}.${k} is not allowed`);
       else if (schema.additionalProperties && typeof schema.additionalProperties === 'object') errors.push(...validate(v, schema.additionalProperties, `${path}.${k}`));
@@ -65,6 +67,9 @@ export function checkToolSchema(schema: unknown): string | null {
     if (!s || typeof s !== 'object' || Array.isArray(s)) return 'every schema node must be an object';
     for (const [k, v] of Object.entries(s as Record<string, unknown>)) {
       if (!ALLOWED_KEYWORDS.has(k)) return `schema keyword "${k}" is not supported`;
+      if ((k === 'enum' || k === 'required') && !Array.isArray(v)) return `${k} must be a list`;
+      if (k === 'required' && !(v as unknown[]).every((x) => typeof x === 'string')) return 'required must list property names';
+      if (['minLength', 'maxLength', 'minimum', 'maximum', 'minItems', 'maxItems'].includes(k) && (typeof v !== 'number' || !Number.isFinite(v))) return `${k} must be a number`;
       if (k === 'type') {
         const list = Array.isArray(v) ? v : [v];
         if (!list.every((t) => typeof t === 'string' && TYPES.has(t))) return `unknown type ${JSON.stringify(v)}`;

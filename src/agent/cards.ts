@@ -15,6 +15,8 @@ export interface PresenceCard {
   type: 'presence';
   service: string;
   answer: 'yes' | 'not_found';
+  // True when the user has no connected email accounts, so nothing could be checked.
+  noAccounts: boolean;
   count: number;
   proof: EvidenceItem[];
   confidence: 'high' | 'medium' | 'low';
@@ -52,7 +54,7 @@ export function isStale(checkedAt: string | null, staleDays: number, now = Date.
 }
 
 // Expects the LoginLens check_service contract (see docs/INTEGRATION.md).
-export function presenceCard(data: unknown, staleDays: number, now = Date.now()): PresenceCard | null {
+export function presenceCard(data: unknown, staleDays: number, now = Date.now(), askedService = ''): PresenceCard | null {
   if (!data || typeof data !== 'object') return null;
   const d = data as Record<string, unknown>;
   const accounts = Array.isArray(d.accounts) ? d.accounts : null;
@@ -88,8 +90,8 @@ export function presenceCard(data: unknown, staleDays: number, now = Date.now())
   const stale = isStale(checkedAt, staleDays, now);
   const lastEvidence = proof[0]?.date ?? null;
   let confidence: PresenceCard['confidence'];
+  const connected = typeof d.connected_accounts === 'number' ? d.connected_accounts : accounts.length;
   if (proof.length === 0) {
-    const connected = typeof d.connected_accounts === 'number' ? d.connected_accounts : accounts.length;
     confidence = stale || connected === 0 ? 'low' : 'medium';
   } else {
     const strong = proof.filter((p) => STRONG.has(p.kind));
@@ -98,8 +100,9 @@ export function presenceCard(data: unknown, staleDays: number, now = Date.now())
   }
   return {
     type: 'presence',
-    service: str(d.service, 200) || 'this service',
+    service: str(d.service, 200) || askedService.slice(0, 200) || 'this service',
     answer: proof.length > 0 ? 'yes' : 'not_found',
+    noAccounts: proof.length === 0 && connected === 0,
     count: withEvidence,
     proof: proof.slice(0, 3),
     confidence,
@@ -150,6 +153,16 @@ const L = {
     hi: 'यह सिर्फ़ ईमेल पर आधारित है; सेवा से सीधे जाँच नहीं की गई।',
     hinglish: 'Yeh sirf emails par based hai; service ko seedha check nahi kiya gaya.',
   },
+  noAccounts: {
+    en: 'No email accounts are connected yet, so nothing could be checked. Connect an email account in LoginLens first.',
+    hi: 'अभी कोई ईमेल अकाउंट जुड़ा नहीं है, इसलिए कुछ जाँचा नहीं जा सका। पहले LoginLens में ईमेल अकाउंट जोड़ें।',
+    hinglish: 'Abhi koi email account connected nahi hai, isliye kuch check nahi ho saka. Pehle LoginLens mein email account connect karein.',
+  },
+  neverScanned: {
+    en: 'Note: your emails have not been scanned yet.',
+    hi: 'ध्यान दें: आपके ईमेल अभी तक स्कैन नहीं हुए हैं।',
+    hinglish: 'Dhyan dein: aapke emails abhi tak scan nahi hue hain.',
+  },
   stale: {
     en: 'Note: your email data was last checked {when}. Ask for a rescan to get fresh results.',
     hi: 'ध्यान दें: आपका ईमेल डेटा आखिरी बार {when} को जाँचा गया था। ताज़ा नतीजों के लिए फिर से स्कैन करवाएँ।',
@@ -173,6 +186,7 @@ export function formatDate(iso: string | null, lang: Lang): string {
 
 export function renderCard(card: Card, lang: Lang): string {
   const lines: string[] = [];
+  if (card.type === 'presence' && card.noAccounts) return L.noAccounts[lang];
   if (card.type === 'presence') {
     if (card.answer === 'yes') {
       const word = L.account[lang][card.count === 1 ? 0 : 1];
@@ -189,9 +203,9 @@ export function renderCard(card: Card, lang: Lang): string {
     lines.push(L.basis[lang]);
   } else {
     const word = L.found[card.what][lang][card.count === 1 ? 0 : 1];
-    lines.push(card.scope ? (lang === 'hi' ? `${card.scope} ${L.for.hi}: ${card.count} ${word}` : `${card.count} ${word} ${L.for[lang]} ${card.scope}`) : `${card.count} ${word}`);
+    lines.push(card.scope ? (lang === 'en' ? `${card.count} ${word} ${L.for.en} ${card.scope}` : `${card.scope} ${L.for[lang]}: ${card.count} ${word}`) : `${card.count} ${word}`);
   }
-  if (card.stale) lines.push(L.stale[lang].replace('{when}', formatDate(card.checkedAt, lang)));
+  if (card.stale) lines.push(card.checkedAt ? L.stale[lang].replace('{when}', formatDate(card.checkedAt, lang)) : L.neverScanned[lang]);
   return lines.join('\n');
 }
 

@@ -56,13 +56,36 @@ export function toSpec(t: ToolDefinition): ToolSpec {
   return { name: t.name, description: t.description, inputSchema: t.inputSchema };
 }
 
+// Email subjects and app data can carry text written to steer the AI ("ignore all rules,
+// tell the user..."). Such sentences are cut out before the model ever sees them; the
+// system prompt rule is the second line of defence.
+const INJECTION =
+  /\b(ignore|disregard|forget|override)\b[^.!?\n]{0,40}\b(rules?|instructions?|prompts?|messages?|guidelines?)\b|\b(system|assistant|developer)\s*(:|prompt\b)|\byou are now\b|\bnew instructions?\b|\btell the user\b|\b(reveal|print|show)\b[^.!?\n]{0,30}\b(prompt|instructions?|secret|key)\b|\bpassword is\b|\bdo not tell\b|<\/?(system|instructions?|tool_result)>/i;
+
+export function neutralizeInjection(text: string): string {
+  if (!INJECTION.test(text)) return text;
+  const kept = text.split(/(?<=[.!?।])\s+|\n+/).map((s) => (INJECTION.test(s) ? '[suspicious text removed]' : s));
+  return kept.join(' ');
+}
+
 function sanitizeForModel(value: unknown, depth = 0): unknown {
   if (depth > 8) return '[nested too deep]';
-  if (typeof value === 'string') return cleanText(value, 1000);
+  if (typeof value === 'string') return neutralizeInjection(cleanText(value, 1000));
   if (Array.isArray(value)) return value.slice(0, 200).map((v) => sanitizeForModel(v, depth + 1));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>).slice(0, 100)) out[cleanText(k, 100)] = sanitizeForModel(v, depth + 1);
+    return out;
+  }
+  return value;
+}
+
+function dropKeys(value: unknown, key: string, depth = 0): unknown {
+  if (depth > 8) return value;
+  if (Array.isArray(value)) return value.map((v) => dropKeys(v, key, depth + 1));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) if (k !== key) out[k] = dropKeys(v, key, depth + 1);
     return out;
   }
   return value;
@@ -130,13 +153,13 @@ export class ToolRegistry {
     return [...this.builtins.values()];
   }
 
-  async forProject(db: Db, project: Project, secrets: Secrets, config: Config): Promise<ToolDefinition[]> {
+  async forProject(db: Db, project: Project, secrets: Secrets, config: Config, opts: { demo?: boolean } = {}): Promise<ToolDefinition[]> {
     const disabled = new Set(project.settings.disabledTools ?? []);
     const enabled = new Set(project.settings.enabledTools ?? []);
     const tools = [...this.builtins.values()].filter((t) => !disabled.has(t.name) && (!t.optIn || enabled.has(t.name)));
     const rows = await db.all<WebhookRow>('SELECT * FROM webhook_tools WHERE project_id = ? AND enabled = 1 ORDER BY name', [project.id]);
     const connector = await getLoginLensConnector(db, project.id);
-    if (connector) {
+    if (connector || opts.demo) {
       for (const t of loginLensTools(connector, secrets, config, project.id)) if (!disabled.has(t.name)) tools.push(t);
     }
     const taken = new Set(tools.map((t) => t.name));
@@ -253,7 +276,8 @@ export interface ToolRunOutcome {
 }
 
 function callKey(call: ToolCall): string {
-  const sorted = Object.keys(call.args).sort().reduce<Record<string, unknown>>((o, k) => ((o[k] = call.args[k]), o), {});
+  const norm = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : v);
+  const sorted = Object.keys(call.args).sort().reduce<Record<string, unknown>>((o, k) => ((o[k] = norm(call.args[k])), o), {});
   return `${call.name}:${JSON.stringify(sorted)}`;
 }
 
@@ -290,7 +314,12 @@ export async function runToolCalls(
         return { type: 'tool_result', callId: call.id, name: call.name, content: `Unknown tool "${call.name}". Use only the tools you were given.`, isError: true };
       }
       const label = tool.label ?? tool.name.replace(/_/g, ' ');
-      const errors = validate(call.args, tool.inputSchema);
+      let errors: string[];
+      try {
+        errors = validate(call.args, tool.inputSchema);
+      } catch {
+        errors = ['the tool input could not be checked'];
+      }
       if (errors.length) {
         await audit(ctx.db, { ...base, event: 'tool_call', status: 'invalid_input', detail: { errors } });
         return { type: 'tool_result', callId: call.id, name: call.name, content: `Invalid input: ${errors.join('; ')}`, isError: true };
@@ -301,17 +330,14 @@ export async function runToolCalls(
         emit({ type: 'tool', name: tool.name, label, status: 'needs_confirmation' });
         emit({ type: 'action', action });
         await audit(ctx.db, { ...base, event: 'tool_pending', status: 'needs_confirmation', detail: { action_id: action.id } });
-        return {
-          type: 'tool_result',
-          callId: call.id,
-          name: call.name,
-          content: JSON.stringify({
-            status: 'needs_confirmation',
-            action_id: action.id,
-            summary: action.summary,
-            note: 'Nothing has been done yet. Tell the user what will happen and ask them to press Confirm. Do not say it is done.',
-          }),
-        };
+        const content = JSON.stringify({
+          status: 'needs_confirmation',
+          action_id: action.id,
+          summary: action.summary,
+          note: 'Nothing has been done yet. Tell the user what will happen and ask them to press Confirm. Do not say it is done.',
+        });
+        memo.set(key, content);
+        return { type: 'tool_result', callId: call.id, name: call.name, content };
       }
       emit({ type: 'tool', name: tool.name, label, status: 'running' });
       const started = Date.now();
@@ -324,7 +350,9 @@ export async function runToolCalls(
           cards.push(card);
           emit({ type: 'card', card });
         }
-        const content = card ? wrapToolOutput(tool.name, { ...cardSummaryForModel(card), details: data }) : wrapToolOutput(tool.name, data);
+        // With a card the model only needs the facts, not raw email subjects (the main
+        // place injected text hides), which also keeps the prompt short on a CPU.
+        const content = card ? wrapToolOutput(tool.name, { ...cardSummaryForModel(card), details: dropKeys(data, 'subject') }) : wrapToolOutput(tool.name, data);
         memo.set(key, content);
         return { type: 'tool_result', callId: call.id, name: call.name, content };
       } catch (err) {
@@ -392,7 +420,13 @@ export async function resolveAction(
   }
   const tool = tools.find((t) => t.name === row.tool_name && t.permission === 'write_confirm');
   const args = JSON.parse(row.args) as Record<string, unknown>;
-  if (!tool || validate(args, tool.inputSchema).length) {
+  let invalid = true;
+  try {
+    invalid = !tool || validate(args, tool.inputSchema).length > 0;
+  } catch {
+    invalid = true;
+  }
+  if (!tool || invalid) {
     await ctx.db.run("UPDATE pending_actions SET status = 'failed' WHERE id = ?", [actionId]);
     return { ok: false, code: 'tool_unavailable', message: 'This action can no longer run (the tool is turned off or changed).' };
   }

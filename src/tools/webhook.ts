@@ -43,7 +43,8 @@ export function checkWebhookUrl(raw: string, allowHttp: boolean, allowPrivateNet
   }
   if (url.protocol !== 'https:' && !(allowHttp && url.protocol === 'http:')) throw new WebhookError('The webhook URL must start with https://');
   if (url.username || url.password) throw new WebhookError('The webhook URL must not contain a username or password.');
-  const host = url.hostname.replace(/^\[|\]$/g, '');
+  // A trailing dot ("localhost.") is the same name; strip it before checking.
+  const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (!allowPrivateNetwork && BLOCKED_HOSTS.test(host)) throw new WebhookError('The webhook URL points to a private address.');
   if (!allowPrivateNetwork && isIP(host) && isBlockedIp(host)) throw new WebhookError('The webhook URL points to a private address.');
   if (raw.length > 2000) throw new WebhookError('The webhook URL is too long.');

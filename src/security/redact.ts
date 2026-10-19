@@ -41,7 +41,9 @@ export function redactDeep(value: unknown, depth = 0): unknown {
 }
 
 // Finds passwords, OTPs and similar secrets a user may paste into the chat so they are never stored.
-const PASSWORD_RE = /(?<![\p{L}\p{N}])(password|passwd|pwd|passcode|पासवर्ड)(\s*(?:is|hai|h|=|:|-)\s*|\s*[:=]\s*)(\S{3,})/giu;
+// Word separators ("is", "hai", "h", "है") must be whole words, so "password issue" or
+// "password history" are left alone.
+const PASSWORD_RE = /(?<![\p{L}\p{N}])(password|passwd|pwd|passcode|पासवर्ड)(\s+(?:is|hai|h|है)(?![\p{L}\p{N}\p{M}])\s*[:=-]?\s*|\s*[:=-]\s*)(\S{3,})/giu;
 const OTP_AFTER_RE =
   /(?<![\p{L}\p{N}])(otp|one[- ]time (?:password|code)|verification code|security code|login code|2fa code|code|pin|ओटीपी|कोड)(?![\p{L}])([^0-9\n]{0,20}?)(\d{4,8})(?!\d)/giu;
 const OTP_BEFORE_RE = /(?<!\d)(\d{4,8})(?!\d)(?=[^0-9\n]{0,20}?(?<![\p{L}])(?:otp|code|pin|ओटीपी|कोड)(?![\p{L}]))/giu;

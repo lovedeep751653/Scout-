@@ -42,6 +42,7 @@ export function setupPage(p: { view: SetupView; publicUrl: string; ai: RuntimeSt
 <p>When you have saved the key, press the button. After that, Scout forgets it and keeps only a scrambled fingerprint.</p>
 <button id="done" type="button" class="secondary">I saved the key</button>
 </div>
+<div class="card"><h2>Try Scout now</h2><p>Open the <a href="/demo">demo page</a> to chat with Scout using made-up sample data (works during this setup hour, or when DEMO_MODE=true).</p></div>
 <script>
 document.getElementById('copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.getElementById('k').textContent);document.getElementById('msg').textContent='Copied.'}catch(e){document.getElementById('msg').textContent='Press and hold the key to copy it.'}};
 document.getElementById('done').onclick=async()=>{if(!confirm('Have you saved the key somewhere safe? It cannot be shown again.'))return;await fetch('/setup/confirm',{method:'POST'});location.reload()};
@@ -57,6 +58,22 @@ document.getElementById('done').onclick=async()=>{if(!confirm('Have you saved th
 ${keyBlock}${aiBlock(p.ai)}
 <div class="card"><h2>Check that it works</h2><ol><li>Open <a href="/health">/health</a>. It should say <code>"status":"ok"</code> once the AI model has downloaded.</li><li>Read <a href="/docs">/docs</a> for what LoginLens needs to build.</li></ol></div>
 </main>${p.ai.state !== 'ready' && p.ai.state !== 'disabled' ? '<script>setTimeout(()=>location.reload(),10000)</script>' : ''}</body></html>`;
+}
+
+export function demoPage(agentName: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(agentName)} demo</title><style>${BASE_CSS}
+.banner{background:rgba(180,83,9,.12);border:1px solid rgba(180,83,9,.35);border-radius:14px;padding:12px 14px}</style></head>
+<body><main><h1>${esc(agentName)} demo</h1>
+<p class="banner"><b>Sample data only.</b> The accounts, services and devices in this demo are made up (the pretend user is "Riya"). Nothing here is your real data.</p>
+<div class="card"><h2>Try it</h2><p>Tap the round button at the bottom right and ask, for example:</p>
+<ul><li>Is my email signed up for Netflix?</li><li>Do I have a Spotify account?</li><li>Kya mera Amazon pe account hai?</li><li>मेरे कितने डिवाइस हैं?</li><li>What should I fix first?</li><li>Add a note on Netflix: family account</li></ul>
+<p class="muted">The free AI runs on this server's CPU, so an answer can take 20-60 seconds.</p></div>
+</main><script src="/scout.js" data-token-url="/demo/token" async></script></body></html>`;
+}
+
+export function demoOffPage(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scout demo</title><style>${BASE_CSS}</style></head>
+<body><main><h1>The demo is turned off</h1><div class="card"><p>The demo is open for the first hour after Scout starts. To turn it on again, add the setting <code>DEMO_MODE=true</code> in your hosting dashboard and restart Scout.</p></div></main></body></html>`;
 }
 
 export function landingPage(publicUrl: string): string {

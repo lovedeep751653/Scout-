@@ -91,7 +91,8 @@ export function cleanOrigins(list: unknown): string[] {
 }
 
 export function originAllowed(allowed: string[], origin: string | undefined): boolean {
-  if (!origin) return false;
+  // A browser always sends a concrete origin; a pattern here is never legitimate.
+  if (!origin || origin.includes('*')) return false;
   const o = normalizeOrigin(origin);
   if (!o) return false;
   for (const a of allowed) {
