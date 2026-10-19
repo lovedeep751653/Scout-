@@ -188,7 +188,8 @@ export async function summarize(provider: ModelProvider, previous: string | null
 // ---------- listing, export and deletion ----------
 
 export async function listSessions(db: Db, projectId: string, userId: string, limit = 20) {
-  const rows = await db.all<SessionRow>('SELECT * FROM sessions WHERE project_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT ?', [projectId, userId, Math.min(100, limit)]);
+  const lim = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 20;
+  const rows = await db.all<SessionRow>('SELECT * FROM sessions WHERE project_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT ?', [projectId, userId, lim]);
   return rows.map((r) => ({ id: r.id, title: r.title, language: r.language, created_at: Number(r.created_at), updated_at: Number(r.updated_at) }));
 }
 

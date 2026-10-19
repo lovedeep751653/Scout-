@@ -60,8 +60,10 @@ function parseToolContent(content: string): unknown {
   }
 }
 
-// Gemini checks thought signatures on function calls in the current turn. Calls made by
-// another provider (after a fallback) have none, so they are replayed as plain text.
+// Gemini checks thought signatures on function calls in the current turn. It signs only
+// the first call of a parallel batch, so one signed call marks the whole message as
+// Gemini's own. Calls made by another provider (after a fallback) have none, so they are
+// replayed as plain text.
 export function toGeminiContents(messages: Message[]): GContent[] {
   const turnStart = lastUserTextIndex(messages);
   const asText = new Set<string>();
@@ -70,6 +72,7 @@ export function toGeminiContents(messages: Message[]): GContent[] {
 
   messages.forEach((m, index) => {
     const parts: GPart[] = [];
+    const signed = m.parts.some((p) => p.type === 'tool_call' && p.call.meta?.thoughtSignature);
     for (const p of m.parts) {
       if (p.type === 'text') {
         if (p.text || p.meta?.thoughtSignature) {
@@ -77,7 +80,7 @@ export function toGeminiContents(messages: Message[]): GContent[] {
         }
       } else if (p.type === 'tool_call') {
         callMeta.set(p.call.id, p.call);
-        if (index >= turnStart && !p.call.meta?.thoughtSignature) {
+        if (index >= turnStart && !signed) {
           asText.add(p.call.id);
           parts.push({ text: `[I called the tool ${p.call.name} with ${JSON.stringify(p.call.args)}]` });
         } else {

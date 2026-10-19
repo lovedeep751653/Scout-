@@ -329,9 +329,13 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
     grounding.push(...cardTexts);
     // Yes/No cards already hold the full answer and proof, so commentary stays short.
     // Count cards only hold a number, so the model's list is the useful part.
+    // When the only data came from a Yes/No check, the card says everything (answer,
+    // proof, confidence, date); small models' extra sentences mostly repeat or blur it.
     const hasPresence = cards.some((c) => c.type === 'presence');
+    const cardTools = new Set(tools.filter((tl) => tl.card).map((tl) => tl.name));
+    const onlyCheckTools = used.size > 0 && [...used].every((n) => cardTools.has(n)) && cards.every((c) => c.type === 'presence');
     let talk = cards.length ? filterCommentary(commentary.slice(-1).join('\n\n'), cards) : commentary.join('\n\n');
-    if (hasPresence) talk = limitSentences(talk, 2, 360);
+    if (hasPresence) talk = onlyCheckTools ? '' : limitSentences(talk, 2, 360);
     if (used.size > 0 && talk) talk = groundNumbers(talk, grounding.join('\n'));
     if (cards.length && talk) emit({ type: 'delta', text: `${streamedAny ? '\n\n' : ''}${talk}` });
     const text = [notices.join('\n\n'), talk].filter(Boolean).join('\n\n');

@@ -218,6 +218,8 @@ export async function revokeKey(db: Db, id: string, at = Date.now()): Promise<bo
 // Makes a new key with the same settings. The old key keeps working for `graceMs`
 // so the connected app can switch over without downtime.
 export async function rotateKey(db: Db, id: string, graceMs: number): Promise<{ key: ApiKey; plaintext: string } | undefined> {
+  // A bad grace value must never leave the old key valid forever.
+  if (!Number.isFinite(graceMs)) graceMs = 0;
   const old = await getKey(db, id);
   if (!old || keyStatus(old) !== 'active') return undefined;
   return db.transaction(async (tx) => {

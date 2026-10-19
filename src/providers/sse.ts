@@ -45,6 +45,8 @@ export async function* parseSse(body: AsyncIterable<Uint8Array>): AsyncGenerator
     }
   }
   buffer += decoder.decode();
+  // A CR held back at the very end, waiting for a possible LF, is still a line ending.
+  if (buffer.endsWith('\r')) buffer = buffer.slice(0, -1);
   if (buffer) {
     const ev = handleLine(buffer);
     if (ev) yield ev;

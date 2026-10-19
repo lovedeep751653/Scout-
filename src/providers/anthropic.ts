@@ -9,6 +9,7 @@ import {
   type Message,
   type ModelProvider,
   type Part,
+  type ProviderErrorKind,
   type StopReason,
   type StreamEvent,
 } from './types.ts';
@@ -102,6 +103,17 @@ export function fromAnthropicMessage(msg: Anthropic.Message, provider: string): 
   };
 }
 
+const ERROR_TYPE_KINDS: Record<string, ProviderErrorKind> = {
+  overloaded_error: 'overloaded',
+  api_error: 'server',
+  rate_limit_error: 'rate_limit',
+  authentication_error: 'auth',
+  permission_error: 'auth',
+  not_found_error: 'not_found',
+  invalid_request_error: 'bad_request',
+  request_too_large: 'bad_request',
+};
+
 export function mapAnthropicError(err: unknown): ProviderError {
   const name = 'anthropic';
   if (err instanceof ProviderError) return err;
@@ -110,7 +122,8 @@ export function mapAnthropicError(err: unknown): ProviderError {
   if (err instanceof Anthropic.APIConnectionError) return new ProviderError('network', name, 'Could not reach Claude.', { cause: err });
   if (err instanceof Anthropic.APIError) {
     const status = typeof err.status === 'number' ? err.status : 0;
-    const kind = err.type === 'overloaded_error' ? 'overloaded' : kindFromStatus(status);
+    // Errors sent inside a stream carry no HTTP status, only an error type.
+    const kind = ERROR_TYPE_KINDS[String(err.type)] ?? kindFromStatus(status);
     return new ProviderError(kind, name, `Claude API error ${status}: ${err.message}`, {
       status,
       retryAfterMs: parseRetryAfter(err.headers?.get('retry-after')),

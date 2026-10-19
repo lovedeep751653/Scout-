@@ -278,8 +278,9 @@ test('a card-producing tool puts a verified "Yes" card first in the reply', asyn
   assert.equal(r.card_texts.length, 1);
   assert.ok(r.card_texts[0]!.startsWith('Yes — 1 account (Netflix)'), r.card_texts[0]);
   assert.ok(r.reply.startsWith(r.card_texts[0]!), 'the reply starts with the card text');
-  assert.ok(r.reply.endsWith('You can review your sign-ins in your Netflix settings.'));
-  assert.equal(r.text, 'You can review your sign-ins in your Netflix settings.');
+  // Only the Yes/No check ran, so the card is the whole answer (no model commentary).
+  assert.equal(r.reply, r.card_texts[0]);
+  assert.equal(r.text, '');
   assert.ok(c.events.some((e) => e.type === 'card'));
 
   // The model got a short fact line, not the raw email subject (where injected text hides).
@@ -306,10 +307,10 @@ test('commentary that contradicts a "Yes" card is removed from the reply and nev
   assert.ok(r.card_texts[0]!.startsWith('Yes'));
   assert.ok(!r.reply.includes('do not have an account'), r.reply);
   assert.ok(!r.text.includes('do not have an account'));
-  assert.ok(r.reply.endsWith('You can review your sign-ins in settings.'));
+  assert.equal(r.reply, r.card_texts[0]);
   const streamed = c.deltas().join('');
   assert.ok(!streamed.includes('do not have'), streamed);
-  assert.equal(streamed, 'You can review your sign-ins in settings.');
+  assert.equal(streamed, '');
   const msgs = await stored(env, r.session_id);
   assert.ok(!JSON.stringify(msgs).includes('do not have an account'), 'the contradiction is not stored either');
   await env.db.close();
@@ -323,7 +324,26 @@ test('a not_found card says "No — not found in your emails" and drops a contra
   assert.ok(r.card_texts[0]!.startsWith('No — not found in your emails (Hulu)'), r.card_texts[0]);
   assert.ok(r.reply.startsWith('No — not found in your emails'));
   assert.ok(!/you have an account/i.test(r.reply), r.reply);
-  assert.ok(r.reply.endsWith('You could connect another email to check more.'));
+  assert.equal(r.reply, r.card_texts[0]);
+  await env.db.close();
+});
+
+test('with another tool besides the Yes/No check, commentary is kept but contradicting sentences are removed', async () => {
+  const env = await testEnv({
+    script: (req) => {
+      const results = req.messages.flatMap((m) => m.parts).filter((p) => p.type === 'tool_result').length;
+      if (results === 0) return { toolCalls: [{ name: 'check_service', args: { service: 'Netflix' } }] };
+      if (results === 1) return { toolCalls: [{ name: 'lookup_order', args: { id: 'A1' } }] };
+      return { text: 'No, you do not have an account at Netflix. Your order A1 has shipped.' };
+    },
+  });
+  env.registry.register(checkServiceTool(YES_DATA));
+  env.registry.register(lookupTool({ handler: async () => ({ status: 'shipped' }) }));
+  const r = await runChat(env.deps, principal(env), { message: 'Do I have Netflix, and where is order A1?' });
+  assert.ok(r.card_texts[0]!.startsWith('Yes'));
+  assert.ok(!r.reply.includes('do not have an account'), r.reply);
+  assert.ok(r.reply.endsWith('Your order A1 has shipped.'), r.reply);
+  assert.equal(r.text, 'Your order A1 has shipped.');
   await env.db.close();
 });
 

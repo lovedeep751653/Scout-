@@ -127,7 +127,7 @@
 
   // Tiny, safe formatter for the AI's text: **bold** and "- " / "* " bullet lines.
   // It only creates DOM nodes (never innerHTML), so text from the AI cannot inject HTML.
-  function inline(parent, text) {
+  function fmtInline(parent, text) {
     var parts = String(text).split(/(\*\*[^*]+\*\*)/g);
     parts.forEach(function (part) {
       var m = /^\*\*([^*]+)\*\*$/.exec(part);
@@ -138,9 +138,9 @@
     var box = el('div', 'md'); var list = null;
     String(text).split('\n').forEach(function (line) {
       var b = /^\s*[-*•]\s+(.*)$/.exec(line);
-      if (b) { if (!list) { list = el('ul'); box.appendChild(list); } var li = el('li'); inline(li, b[1]); list.appendChild(li); return; }
+      if (b) { if (!list) { list = el('ul'); box.appendChild(list); } var li = el('li'); fmtInline(li, b[1]); list.appendChild(li); return; }
       list = null;
-      if (line.trim()) { var para = el('p'); inline(para, line); box.appendChild(para); }
+      if (line.trim()) { var para = el('p'); fmtInline(para, line); box.appendChild(para); }
     });
     return box;
   }
@@ -279,7 +279,7 @@
               var chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
               var ev = 'message', data = '';
               chunk.split('\n').forEach(function (line) { if (line.indexOf('event: ') === 0) ev = line.slice(7); else if (line.indexOf('data: ') === 0) data += line.slice(6); });
-              if (data) { try { handle(ev, JSON.parse(data)); } catch (e) {} }
+              if (data) { try { handle(ev, JSON.parse(data)); } catch (e) { if (window.console) console.error('Scout widget:', e); } }
             }
             return pump();
           });

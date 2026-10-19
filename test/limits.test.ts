@@ -772,7 +772,9 @@ test('too many messages per minute answers 429 with a Retry-After header', async
   assert.equal(res.statusCode, 429, res.body);
   assert.equal(res.json().error.code, 'rate_limited');
   const retryAfter = Number(res.headers['retry-after']);
-  assert.ok(Number.isInteger(retryAfter) && retryAfter >= 1 && retryAfter <= 60, `retry-after was ${res.headers['retry-after']}`);
+  // The sliding window also counts part of the previous minute, so an honest wait can be
+  // longer than 60 s (up to two windows), depending on when in the minute the test runs.
+  assert.ok(Number.isInteger(retryAfter) && retryAfter >= 1 && retryAfter <= 120, `retry-after was ${res.headers['retry-after']}`);
   assert.equal((await chat('u2')).statusCode, 200, 'other users keep their own per-minute budget');
   await app.close();
   await env.db.close();

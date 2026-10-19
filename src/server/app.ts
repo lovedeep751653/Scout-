@@ -301,7 +301,9 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
   app.post('/v1/app-key/rotate', async (req) => {
     const c = await authenticate(req, 'keys:rotate', { allowUserToken: false });
     if (c.kind !== 'app') throw new HttpError(403, 'forbidden', 'Use the app key.');
-    const grace = Math.max(0, Math.min(7 * 86_400, Number(body(req).grace_seconds ?? 3600)));
+    const rawGrace = body(req).grace_seconds ?? 3600;
+    if (typeof rawGrace !== 'number' || !Number.isFinite(rawGrace)) throw new HttpError(400, 'bad_grace', 'grace_seconds must be a number of seconds (0 to 604800).');
+    const grace = Math.max(0, Math.min(7 * 86_400, Math.floor(rawGrace)));
     const created = await rotateKey(db, c.key.id, grace * 1000);
     if (!created) throw new HttpError(409, 'cannot_rotate', 'This key cannot be rotated.');
     await audit(db, { projectId: c.project.id, keyId: c.key.id, event: 'app_key_rotated', status: 'ok', detail: { new_key_id: created.key.id, grace_seconds: grace } });
@@ -509,7 +511,9 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
   app.get('/v1/sessions', async (req) => {
     const c = await authenticate(req, 'chat', { allowUserToken: true });
     const who = principalFor(c, req);
-    return { sessions: await listSessions(db, who.projectId, who.userId, Number(query(req).limit ?? 20) || 20) };
+    const n = Number(query(req).limit ?? 20);
+    const lim = Number.isFinite(n) ? Math.max(1, Math.min(100, Math.floor(n))) : 20;
+    return { sessions: await listSessions(db, who.projectId, who.userId, lim) };
   });
 
   app.get('/v1/sessions/:id/messages', async (req) => {

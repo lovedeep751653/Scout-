@@ -35,6 +35,8 @@ export async function postJson(call: HttpCall): Promise<Response> {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...call.headers },
       body: JSON.stringify(call.body),
+      // Never follow a redirect: fetch would forward key headers such as x-goog-api-key.
+      redirect: 'manual',
       signal,
     });
   } catch (err) {

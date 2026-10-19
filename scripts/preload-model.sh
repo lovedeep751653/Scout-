@@ -16,13 +16,12 @@ until ollama list >/dev/null 2>&1; do
   sleep 1
 done
 echo "preload-model: downloading $MODEL ..."
+# A failed download does not fail the build: Scout downloads the model on first start.
 if ollama pull "$MODEL"; then
   echo "preload-model: done."
-  STATUS=0
 else
   echo "preload-model: download failed. Scout will try again when it starts."
-  STATUS=0
 fi
 kill "$PID" 2>/dev/null
 wait "$PID" 2>/dev/null
-exit $STATUS
+exit 0
