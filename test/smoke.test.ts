@@ -47,6 +47,11 @@ test('npm run doctor explains the setup and changes nothing', () => {
     assert.equal(missingKey.status, 1);
     assert.match(missingKey.stdout, /needs SCOUT_MODEL_API_KEY/);
 
+    const shortKey = run({ MODEL_PROVIDER: 'mock', SCOUT_ENCRYPTION_KEY: 'too-short' });
+    assert.equal(shortKey.status, 1, 'a key Scout would refuse at start is reported as a problem');
+    assert.match(shortKey.stdout, /SCOUT_ENCRYPTION_KEY is too short/);
+    assert.ok(!shortKey.stdout.includes('too-short'), 'the key itself is not printed');
+
     const secret = 'gsk_doctor_must_not_print_this_123';
     const withKey = run({ MODEL_PROVIDER: 'groq', SCOUT_MODEL_API_KEY: secret, SCOUT_APP_KEY: `sct_sec_${'a'.repeat(40)}` });
     assert.equal(withKey.status, 0, withKey.stdout);

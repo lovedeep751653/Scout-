@@ -49,7 +49,8 @@ function checkDataFolder(config: Config): void {
 }
 
 function checkSecrets(config: Config): void {
-  if (config.encryptionKey) report('ok', 'SCOUT_ENCRYPTION_KEY is set.');
+  if (config.encryptionKey && config.encryptionKey.length < 32) report('fail', 'SCOUT_ENCRYPTION_KEY is too short. Use at least 32 letters and numbers, or remove it.');
+  else if (config.encryptionKey) report('ok', 'SCOUT_ENCRYPTION_KEY is set.');
   else if (fs.existsSync(path.join(config.dataDir, '.scout-secret'))) report('ok', 'Encryption secret is stored in the data folder.');
   else report('warn', 'No encryption secret yet. Scout creates one on first start. On hosts whose disk resets, set SCOUT_ENCRYPTION_KEY.');
   if (config.appKeyFromEnv) report('ok', 'SCOUT_APP_KEY is set as a hosting secret (the key is not shown).');

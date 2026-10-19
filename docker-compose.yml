@@ -1,9 +1,14 @@
-# For your own server (VPS or Oracle Cloud). Start with:  docker compose up -d --build
+# For your own server (VPS or Oracle Cloud). Put SCOUT_DOMAIN=... in a file named .env,
+# then start with:  docker compose up -d --build
 # Then open https://SCOUT_DOMAIN/setup within 60 minutes to get the Scout app key.
 services:
   scout:
     build: .
     restart: unless-stopped
+    # Your settings (SCOUT_DOMAIN, MODEL_NAME, SCOUT_NEW_APP_KEY, ...) go in the file .env next to this one.
+    env_file:
+      - path: .env
+        required: false
     environment:
       PUBLIC_URL: https://${SCOUT_DOMAIN:?Set SCOUT_DOMAIN, for example 1-2-3-4.sslip.io}
       DEMO_MODE: ${DEMO_MODE:-false}
@@ -11,6 +16,8 @@ services:
       TRUST_PROXY: "1"
     volumes:
       - scout-data:/data
+      # Keeps the AI model (about 3 GB) across updates, so it is never downloaded twice.
+      - scout-models:/opt/ollama-models
     expose:
       - "7860"
 
@@ -29,4 +36,5 @@ services:
 
 volumes:
   scout-data:
+  scout-models:
   caddy-data:

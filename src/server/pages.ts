@@ -54,7 +54,11 @@ document.getElementById('done').onclick=async()=>{if(!confirm('Have you saved th
 <p>If it was <b>not</b> you, someone else may have the key. In your hosting settings add <code>SCOUT_NEW_APP_KEY=true</code>, restart Scout, open this page again, then remove that setting. The old key then stops working.</p></div>`;
   } else if (p.view.status === 'claimed' || p.view.status === 'env') {
     keyBlock = `<div class="card"><h2 class="ok">Scout is set up</h2><p>The app key was saved${p.view.status === 'env' ? ' as the SCOUT_APP_KEY hosting secret' : ''}. For safety it is never shown again.</p>
-<p class="muted">Lost it? Your LoginLens server can make a new one (POST /v1/app-key/rotate). Or set <code>SCOUT_NEW_APP_KEY=true</code> in your hosting settings, restart Scout, open this page again, then remove that setting.</p></div>`;
+<p class="muted">${
+      p.view.status === 'env'
+        ? 'Lost it? Delete the <code>SCOUT_APP_KEY</code> secret in your hosting settings and restart Scout. This page then shows a new key for 60 minutes; save it as <code>SCOUT_APP_KEY</code> again.'
+        : 'Lost it? Your LoginLens server can make a new one (POST /v1/app-key/rotate). Or set <code>SCOUT_NEW_APP_KEY=true</code> in your hosting settings, restart Scout, open this page again, then remove that setting.'
+    }</p></div>`;
   } else {
     keyBlock = `<div class="card"><h2 class="warn">The setup window has closed</h2><p>For safety the app key is only shown for ${p.windowMinutes} minutes after Scout first starts. If LoginLens is already using the key, it keeps working. Otherwise restart Scout (your hosting dashboard has a Restart button), then open this page again within ${p.windowMinutes} minutes to get a new key.</p></div>`;
   }
