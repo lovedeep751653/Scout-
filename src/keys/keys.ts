@@ -220,6 +220,11 @@ export async function reactivateKey(db: Db, id: string): Promise<void> {
   clearKeyCache();
 }
 
+export async function markEnvKey(db: Db, id: string): Promise<void> {
+  await db.run("UPDATE api_keys SET source = 'env' WHERE id = ?", [id]);
+  clearKeyCache();
+}
+
 // Makes a new key with the same settings. The old key keeps working for `graceMs`
 // so the connected app can switch over without downtime.
 export async function rotateKey(db: Db, id: string, graceMs: number): Promise<{ key: ApiKey; plaintext: string } | undefined> {

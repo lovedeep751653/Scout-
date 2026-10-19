@@ -30,7 +30,7 @@ Prices and limits were checked in October 2026; see [docs/ARCHITECTURE.md](docs/
    ```
 4. **Files** → **Add file** → **Create a new file** named `Dockerfile`. Paste the contents of [deploy/huggingface/Dockerfile](deploy/huggingface/Dockerfile) and change the two lines `REPO_URL` and `BRANCH` to your GitHub repository address and branch.
 5. Wait for the build. It downloads the AI model into the image, so it takes 10–20 minutes.
-6. Open `https://<your-space>.hf.space/setup` yourself **within 60 minutes**, directly in your browser (not inside the Hugging Face page). Copy the **Scout app key** and press **I saved the key**. For safety, only the first browser that opens this page sees the key; if the page says it was already shown in another browser and that was not you, see "Lost or leaked key" below.
+6. In your Space, tap **Logs** and find the line **First-time setup: open this private link**. Open that link **within 60 minutes**, directly in your browser (not inside the Hugging Face page). Copy the **Scout app key** and press **I saved the key**. Only someone who can read your logs can open this link.
 7. While the setup hour lasts, try the demo: `https://<your-space>.hf.space/demo` (made-up sample data).
 8. Because the Space disk resets on every restart, open **Settings → Variables and secrets** and add these **secrets** (the Space restarts afterwards):
    - `SCOUT_APP_KEY`: the key you just copied.
@@ -51,7 +51,7 @@ Prices and limits were checked in October 2026; see [docs/ARCHITECTURE.md](docs/
    docker compose up -d --build
    ```
    `sslip.io` gives a free web address for your IP, and the included Caddy server gets a free HTTPS certificate for it automatically. The file `.env` in the `scout` folder holds your settings (it is never uploaded to GitHub).
-3. Wait 10–20 minutes (building and downloading the model), then open `https://203-0-113-7.sslip.io/setup` yourself **within 60 minutes**. Copy the key and press **I saved the key**. Only the first browser that opens this page sees the key.
+3. Wait 10–20 minutes (building and downloading the model), then run `docker compose logs scout | grep "First-time setup"` and open the private link it shows **within 60 minutes**. Copy the key and press **I saved the key**.
 4. Updating later: `cd scout && git pull && docker compose up -d --build`.
 5. Changing a setting later (for example `MODEL_NAME=qwen3.5:2b`): `cd scout && echo "MODEL_NAME=qwen3.5:2b" >> .env && docker compose up -d`. To remove a setting, delete its line from `.env` (`nano .env`), then run `docker compose up -d` again.
 
@@ -69,9 +69,10 @@ Same as **B**, on an Oracle "VM.Standard.A1.Flex" Ubuntu instance (2 OCPU, 12 GB
 - `https://YOUR-SCOUT/health` should show `"status":"ok"`.
 - On a VPS, `cd scout && docker compose exec scout npm run doctor` checks the setup in plain words (memory, database, key, AI model, LoginLens connection). It changes nothing.
 - **Lost or leaked key:**
-  - If you added the `SCOUT_APP_KEY` secret (Hugging Face step 8): delete that secret. The Space restarts; open `/setup` within 60 minutes, copy the new key, then add it as the `SCOUT_APP_KEY` secret again and give it to LoginLens. The old key stops working.
+  - If you added the `SCOUT_APP_KEY` secret (Hugging Face step 8): delete that secret. The Space restarts; open the private link from the Logs within 60 minutes, copy the new key, then add it as the `SCOUT_APP_KEY` secret again and give it to LoginLens. The old key stops working.
   - Otherwise (VPS): `cd scout && echo "SCOUT_NEW_APP_KEY=true" >> .env && docker compose up -d`, open `/setup`, copy the new key, then delete that line from `.env` and run `docker compose up -d` again. All older keys stop working.
   - While LoginLens still has a working key, it can also rotate it with `POST /v1/app-key/rotate`.
+  - When LoginLens registers with the new key, it automatically gets a new `signing_secret`, so the old one stops working too.
 - Forgot to press **I saved the key**? If LoginLens already used the key, Scout keeps it. Otherwise, after 60 minutes, a restart shows a new key at `/setup`.
 - Want faster but simpler answers on a small server? Set `MODEL_NAME=qwen3.5:2b` (VPS: see B step 5; Hugging Face: add it under Settings → Variables).
 - The demo page closes after the first hour. Set `DEMO_MODE=true` to keep it open; it only ever uses sample data.

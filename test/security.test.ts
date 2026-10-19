@@ -21,7 +21,7 @@ import {
   verifyUserToken,
 } from '../src/keys/keys.ts';
 import { createProject } from '../src/keys/projects.ts';
-import { confirmSetup, ensureAppKey, SetupError, setupStatus, setupView } from '../src/keys/setup.ts';
+import { confirmSetup, ensureAppKey, SetupError, setupLinkCode, setupStatus, setupView } from '../src/keys/setup.ts';
 import { hmacHex, newId, randomBase62, safeEqual, Secrets, sha256Hex } from '../src/security/crypto.ts';
 import { cleanText, maskEmail, redactDeep, redactText, stripSecretsFromUserText } from '../src/security/redact.ts';
 import { TEST_SECRET, testConfig, testDb, testEnv } from './helpers.ts';
@@ -48,10 +48,10 @@ async function readSetupRow(db: Db): Promise<string | undefined> {
   return row?.value;
 }
 
-// The owner's browser: it keeps the cookie Scout gives the first viewer of /setup.
+// The owner's browser: it opens the private link from the server log and keeps the cookie.
 const ownerTokens = new WeakMap<Db, string>();
 async function ownerView(db: Db, secrets: Secrets) {
-  const v = await setupView(db, secrets, ownerTokens.get(db));
+  const v = await setupView(db, secrets, ownerTokens.get(db), (await setupLinkCode(db, secrets)) ?? undefined);
   if (v.newViewerToken) ownerTokens.set(db, v.newViewerToken);
   return v;
 }
@@ -892,17 +892,36 @@ test('a used key is also kept when the page closed the window first and Scout re
   await db.close();
 });
 
-test('two browsers opening setup at the same moment: only one gets the key', async () => {
+test('without the private link nobody sees the key; with it the newest browser takes over', async () => {
   const { db, config, secrets, projectId } = await setupFixture();
   await ensureAppKey(db, secrets, config, projectId);
-  const views = await Promise.all([setupView(db, secrets), setupView(db, secrets), setupView(db, secrets)]);
-  const withKey = views.filter((v) => v.appKey);
-  assert.equal(withKey.length, 1, JSON.stringify(views.map((v) => v.status)));
-  assert.ok(withKey[0]!.newViewerToken);
-  assert.equal(views.filter((v) => v.status === 'shown_elsewhere').length, 2);
+  const code = (await setupLinkCode(db, secrets))!;
+  assert.match(code, /^[A-Za-z0-9]{20}$/);
+  for (const guess of [undefined, '', 'x'.repeat(20), code.slice(1)]) {
+    const v = await setupView(db, secrets, undefined, guess);
+    assert.equal(v.status, 'need_code');
+    assert.equal(v.appKey, undefined);
+  }
+  const views = await Promise.all([setupView(db, secrets, undefined, code), setupView(db, secrets, undefined, code)]);
+  assert.ok(views.every((v) => v.appKey), 'the link shows the key');
+  const first = await setupView(db, secrets, undefined, code);
+  const second = await setupView(db, secrets, undefined, code);
+  assert.equal((await setupView(db, secrets, first.newViewerToken)).status, 'shown_elsewhere', 'the older browser lost the key');
+  assert.equal((await setupView(db, secrets, second.newViewerToken)).appKey, first.appKey);
+  assert.equal(await confirmSetup(db, first.newViewerToken), false);
   assert.equal(await confirmSetup(db, undefined), false);
-  assert.equal(await confirmSetup(db, 'not-the-token-at-all-000000000000'), false);
-  assert.equal(await confirmSetup(db, withKey[0]!.newViewerToken), true);
+  assert.equal(await confirmSetup(db, second.newViewerToken), true);
+  assert.equal(await setupLinkCode(db, secrets), null, 'no link once the key is saved');
+  await db.close();
+});
+
+test('putting the /setup key into SCOUT_APP_KEY makes it the env key, so rotation is refused', async () => {
+  const { db, config, secrets, projectId } = await setupFixture();
+  await ensureAppKey(db, secrets, config, projectId);
+  const key = (await ownerView(db, secrets)).appKey!;
+  await ownerConfirm(db);
+  await ensureAppKey(db, secrets, testConfig({ SCOUT_APP_KEY: key }), projectId);
+  assert.equal((await findKeyByPlaintext(db, key))!.source, 'env');
   await db.close();
 });
 

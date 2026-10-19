@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createKey, mintUserToken, revokeKey } from '../src/keys/keys.ts';
 import { createProject } from '../src/keys/projects.ts';
-import { ensureAppKey } from '../src/keys/setup.ts';
+import { ensureAppKey, setupLinkCode } from '../src/keys/setup.ts';
 import { Secrets } from '../src/security/crypto.ts';
 import { ConfigError } from '../src/config.ts';
 import { parseSseBody, testApp, testConfig, testEnv, type TestEnv } from './helpers.ts';
@@ -103,8 +103,8 @@ test('GET /health says degraded when the database does not answer', async () => 
 });
 
 // Opens /setup like a browser and returns the key it shows plus the cookie it was given.
-async function openSetup(app: Awaited<ReturnType<typeof testApp>>, cookie?: string) {
-  const page = await app.inject({ method: 'GET', url: '/setup', headers: cookie ? { cookie } : {} });
+async function openSetup(app: Awaited<ReturnType<typeof testApp>>, cookie?: string, code?: string) {
+  const page = await app.inject({ method: 'GET', url: code ? `/setup?code=${code}` : '/setup', headers: cookie ? { cookie } : {} });
   const setCookie = String(page.headers['set-cookie'] ?? '');
   return { page, key: /sct_sec_[A-Za-z0-9]+/.exec(page.body)?.[0], cookie: /scout_setup=[A-Za-z0-9]+/.exec(setCookie)?.[0] ?? cookie, setCookie };
 }
@@ -115,7 +115,7 @@ test('GET /setup shows the new app key once, and after POST /setup/confirm it is
     const rec = await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
     assert.equal(rec.status, 'pending');
 
-    const { page, key, cookie, setCookie } = await openSetup(app);
+    const { page, key, cookie, setCookie } = await openSetup(app, undefined, (await setupLinkCode(env.db, env.secrets))!);
     assert.equal(page.statusCode, 200);
     assert.match(String(page.headers['content-type']), /text\/html/);
     assert.equal(page.headers['cache-control'], 'no-store');
@@ -157,34 +157,40 @@ test('GET /setup shows the new app key once, and after POST /setup/confirm it is
   });
 });
 
-test('only the first browser sees the setup key; another browser is warned and cannot confirm', async () => {
+test('without the private link from the server log, /setup shows no key and nobody can confirm', async () => {
   await withApp({}, async ({ env, app }) => {
     await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
-    const owner = await openSetup(app);
-    assert.ok(owner.key && owner.cookie);
-
-    for (const cookie of [undefined, 'scout_setup=WrongWrongWrongWrongWrongWrong12', 'scout_demo=abcdefabcdefabcdef']) {
-      const other = await openSetup(app, cookie);
-      assert.equal(other.key, undefined, 'a second browser never sees the key');
-      assert.doesNotMatch(other.page.body, /sct_sec_/);
-      assert.match(other.page.body, /already shown in another browser/);
-      assert.match(other.page.body, /SCOUT_NEW_APP_KEY=true/);
-      assert.equal(other.setCookie, '', 'no new setup cookie is handed out');
-      const confirm = await app.inject({ method: 'POST', url: '/setup/confirm', headers: cookie ? { cookie } : {} });
-      assert.deepEqual(confirm.json(), { ok: false }, 'a browser without the setup cookie cannot confirm');
+    for (const url of ['/setup', '/setup?code=wrong', '/setup?code=']) {
+      const page = await app.inject({ method: 'GET', url });
+      assert.doesNotMatch(page.body, /sct_sec_/, url);
+      assert.match(page.body, /private link/, url);
+      assert.equal(page.headers['set-cookie'], undefined, url);
     }
+    assert.deepEqual((await app.inject({ method: 'POST', url: '/setup/confirm' })).json(), { ok: false });
+    const owner = await openSetup(app, undefined, (await setupLinkCode(env.db, env.secrets))!);
+    assert.ok(owner.key && owner.cookie);
+    const stranger = await openSetup(app);
+    assert.equal(stranger.key, undefined);
+    assert.match(stranger.page.body, /open in another browser/);
+    assert.deepEqual((await app.inject({ method: 'POST', url: '/setup/confirm', headers: { cookie: owner.cookie! } })).json(), { ok: true });
+  });
+});
 
-    // The owner's browser is unaffected.
-    assert.equal((await openSetup(app, owner.cookie)).key, owner.key);
-    const ok = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { cookie: owner.cookie! } });
-    assert.deepEqual(ok.json(), { ok: true });
+test('a new app key registering LoginLens gets a new signing secret', async () => {
+  await withApp({ env: { CONNECTOR_ALLOW_PRIVATE_NETWORK: 'true' } }, async ({ env, app }) => {
+    const put = (key: string) => app.inject({ method: 'PUT', url: '/v1/connectors/loginlens', headers: auth(key), payload: { url: 'http://127.0.0.1:4000/scout' } }).then((r) => r.json() as { signing_secret: string });
+    const a = await put(env.appKey);
+    assert.equal((await put(env.appKey)).signing_secret, a.signing_secret);
+    const { plaintext } = await createKey(env.db, { projectId: env.project.id, rateLimitPerMin: 100 });
+    const b = await put(plaintext);
+    assert.notEqual(b.signing_secret, a.signing_secret, 'the replacement key does not inherit the old secret');
   });
 });
 
 test('a cross-origin POST /setup/confirm is rejected and the key stays pending', async () => {
   await withApp({}, async ({ env, app }) => {
     await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
-    const { key, cookie } = await openSetup(app);
+    const { key, cookie } = await openSetup(app, undefined, (await setupLinkCode(env.db, env.secrets))!);
 
     for (const origin of ['https://evil.example', 'null', LOGINLENS]) {
       const res = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { origin, cookie: cookie! } });
@@ -199,7 +205,7 @@ test('a cross-origin POST /setup/confirm is rejected and the key stays pending',
 test('POST /setup/confirm from Scout\'s own public origin is accepted', async () => {
   await withApp({}, async ({ env, app }) => {
     await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
-    const { cookie } = await openSetup(app);
+    const { cookie } = await openSetup(app, undefined, (await setupLinkCode(env.db, env.secrets))!);
     const res = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { origin: 'https://scout.test', cookie: cookie! } });
     assert.equal(res.statusCode, 200, res.body);
     assert.deepEqual(res.json(), { ok: true });

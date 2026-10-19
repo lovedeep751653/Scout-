@@ -3,7 +3,7 @@ import { migrate } from './db/migrations.ts';
 import { openDatabase } from './db/index.ts';
 import { ChatQueue } from './keys/limits.ts';
 import { ensureDefaultProject } from './keys/projects.ts';
-import { ensureAppKey, SetupError } from './keys/setup.ts';
+import { ensureAppKey, SetupError, setupLinkCode } from './keys/setup.ts';
 import { createModelStack } from './providers/index.ts';
 import { OllamaRuntime } from './runtime/ollama.ts';
 import { resolveMasterSecret, Secrets } from './security/crypto.ts';
@@ -72,8 +72,9 @@ async function main(): Promise<void> {
   app.log.info(`Scout ${config.version} is running at ${config.publicUrl} (AI: ${config.primary.provider} / ${config.primary.model}).`);
   if (master.source === 'generated') app.log.warn('Created a new encryption secret in the data folder. To keep it safe across disk resets, set SCOUT_ENCRYPTION_KEY.');
   if (config.appKeyFromEnv && config.newAppKeyOnStart) app.log.warn('SCOUT_NEW_APP_KEY is ignored because SCOUT_APP_KEY is set. The SCOUT_APP_KEY key is the only valid app key.');
-  if (setup.status === 'pending') {
-    app.log.info(`First-time setup: open ${config.publicUrl}/setup within ${config.setupWindowMinutes} minutes to get your Scout app key.`);
+  const setupCode = await setupLinkCode(db, secrets);
+  if (setupCode) {
+    app.log.info(`First-time setup: open this private link within ${config.setupWindowMinutes} minutes to get your Scout app key: ${config.publicUrl}/setup?code=${setupCode} (do not share it)`);
   }
   void runtime?.start();
 

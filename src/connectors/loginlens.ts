@@ -17,9 +17,10 @@ interface ConnectorRow {
   enabled: number;
 }
 
-// Registering again keeps the same signing secret, so several LoginLens servers (or
-// restarts) all agree on it. A new secret is made only on the first registration or
-// when `rotate` is set.
+// Registering again with the same app key keeps the same signing secret, so several
+// LoginLens servers (or restarts) all agree on it. A new secret is made on the first
+// registration, when `rotate` is set, or when a different app key registers (after a
+// lost or leaked key is replaced, the old secret stops working too).
 export async function setLoginLensConnector(
   db: Db,
   secrets: Secrets,
@@ -27,12 +28,13 @@ export async function setLoginLensConnector(
   projectId: string,
   url: string,
   rotate = false,
+  keyId: string | null = null,
 ): Promise<{ url: string; signing_secret: string; secret_rotated: boolean }> {
   checkWebhookUrl(url, config.webhookAllowHttp || config.connectorAllowPrivateNetwork, config.connectorAllowPrivateNetwork);
   const purpose = `connector:${projectId}:${CONNECTOR}`;
-  const existing = rotate ? undefined : await db.get<{ secret_enc: string }>('SELECT secret_enc FROM connectors WHERE project_id = ? AND name = ?', [projectId, CONNECTOR]);
+  const existing = rotate ? undefined : await db.get<{ secret_enc: string; key_id: string | null }>('SELECT secret_enc, key_id FROM connectors WHERE project_id = ? AND name = ?', [projectId, CONNECTOR]);
   let signingSecret = '';
-  if (existing) {
+  if (existing && existing.key_id === keyId) {
     try {
       signingSecret = secrets.decrypt(existing.secret_enc, purpose);
     } catch {
@@ -43,9 +45,9 @@ export async function setLoginLensConnector(
   if (rotated) signingSecret = `whsec_${randomBase62(40)}`;
   const now = Date.now();
   await db.run(
-    `INSERT INTO connectors (project_id, name, url, secret_enc, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)
-     ON CONFLICT (project_id, name) DO UPDATE SET url = excluded.url, secret_enc = excluded.secret_enc, enabled = 1, updated_at = excluded.updated_at`,
-    [projectId, CONNECTOR, url, secrets.encrypt(signingSecret, purpose), now, now],
+    `INSERT INTO connectors (project_id, name, url, secret_enc, key_id, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT (project_id, name) DO UPDATE SET url = excluded.url, secret_enc = excluded.secret_enc, key_id = excluded.key_id, enabled = 1, updated_at = excluded.updated_at`,
+    [projectId, CONNECTOR, url, secrets.encrypt(signingSecret, purpose), keyId, now, now],
   );
   return { url, signing_secret: signingSecret, secret_rotated: rotated };
 }

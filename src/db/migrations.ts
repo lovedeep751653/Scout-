@@ -142,6 +142,12 @@ export const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    version: 2,
+    name: 'connector_key',
+    // Which app key registered the connector: a different key gets a new signing secret.
+    statements: ['ALTER TABLE connectors ADD COLUMN key_id TEXT'],
+  },
 ];
 
 export async function migrate(db: Db, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

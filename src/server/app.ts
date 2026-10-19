@@ -79,7 +79,7 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
       : ({
           level: config.logLevel,
           serializers: {
-            req: (req: { method: string; url: string; ip: string }) => ({ method: req.method, url: redactText(req.url.replace(/([?&](?:key|token)=)[^&]+/gi, '$1[REDACTED]')), ip: req.ip }),
+            req: (req: { method: string; url: string; ip: string }) => ({ method: req.method, url: redactText(req.url.replace(/([?&](?:key|token|code)=)[^&]+/gi, '$1[REDACTED]')), ip: req.ip }),
             res: (res: { statusCode: number }) => ({ statusCode: res.statusCode }),
           },
           hooks: {
@@ -235,7 +235,8 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
   const setupCookie = (req: FastifyRequest) => /(?:^|;\s*)scout_setup=([A-Za-z0-9]{20,64})/.exec(req.headers.cookie ?? '')?.[1];
 
   app.get('/setup', async (req, reply) => {
-    const view = await setupView(db, deps.secrets, setupCookie(req));
+    const code = typeof query(req).code === 'string' ? String(query(req).code) : undefined;
+    const view = await setupView(db, deps.secrets, setupCookie(req), code);
     if (view.newViewerToken) {
       const maxAge = Math.max(60, Math.ceil(((view.windowEndsAt ?? Date.now()) - Date.now()) / 1000));
       reply.header('set-cookie', `scout_setup=${view.newViewerToken}; Path=/setup; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.publicUrl.startsWith('https:') ? '; Secure' : ''}`);
@@ -391,7 +392,7 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
     const c = await authenticate(req, 'connectors', { allowUserToken: false });
     const url = body(req).url;
     if (typeof url !== 'string') throw new HttpError(400, 'url_required', 'Send url: the address on your LoginLens server that answers Scout tool calls.');
-    const r = await setLoginLensConnector(db, deps.secrets, config, c.project.id, url, body(req).rotate_secret === true);
+    const r = await setLoginLensConnector(db, deps.secrets, config, c.project.id, url, body(req).rotate_secret === true, c.kind === 'app' ? c.key.id : null);
     await audit(db, { projectId: c.project.id, keyId: c.kind === 'app' ? c.key.id : null, event: 'connector_set', status: 'ok', detail: { url } });
     return { ...r, note: 'Keep signing_secret on your LoginLens server. Scout signs every call with it (header x-scout-signature). It stays the same when you register again, unless you send rotate_secret: true.' };
   });

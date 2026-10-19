@@ -14,7 +14,7 @@ GitHub gives you a free cloud computer called a **Codespace** (no card needed; a
 1. On this repository's GitHub page, tap **Code** → **Codespaces** → **Create codespace on main**. Wait until a code editor opens in your browser (the first time takes a few minutes; it installs everything by itself).
 2. At the bottom there is a **Terminal**. Tap it, type `npm start` and press Enter.
 3. The first start downloads the AI model (about 3.4 GB), so wait 5–10 minutes. You can watch progress on the setup page.
-4. Open the **Ports** tab, find port **3000** and tap the globe icon. That opens Scout. Add `/demo` to the address to chat with made-up sample data, or `/setup` to see your Scout key and the AI status.
+4. Open the **Ports** tab, find port **3000** and tap the globe icon. That opens Scout. Add `/demo` to the address to chat with made-up sample data. Your Scout key is shown through the private link printed in the Terminal (the line "First-time setup: open this private link").
 5. When you are done, stop the Codespace (GitHub → Codespaces → ⋯ → Stop) to save your free hours.
 
 An answer takes about 20–60 seconds there, because the AI runs on a small shared CPU. If something does not work, type `npm run doctor` in the Terminal: it checks everything and says in plain words what to fix.
@@ -37,7 +37,7 @@ Give **[docs/INTEGRATION.md](docs/INTEGRATION.md)** to whoever builds LoginLens 
 
 | Address | What it is |
 |---|---|
-| `/setup` | Your Scout app key (shown once, for 60 minutes after first start) and AI status |
+| `/setup` | AI status; your Scout app key is shown only through the private link in the server log (60 minutes after first start) |
 | `/demo` | Chat with sample data (during the setup hour, or when `DEMO_MODE=true`) |
 | `/health` | `"status":"ok"` when everything works |
 | `/docs` | List of all API endpoints (`/openapi.json` for tools) |

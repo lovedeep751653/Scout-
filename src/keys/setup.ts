@@ -1,13 +1,14 @@
 import type { Config } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { randomBase62, safeEqual, sha256Hex, type Secrets } from '../security/crypto.ts';
-import { activeKeys, APP_KEY_PATTERN, createKey, findKeyByPlaintext, getKey, keyStatus, reactivateKey, revokeKey } from './keys.ts';
+import { activeKeys, APP_KEY_PATTERN, createKey, findKeyByPlaintext, getKey, keyStatus, markEnvKey, reactivateKey, revokeKey } from './keys.ts';
 
 // First-run flow: Scout creates its own app key, keeps it (encrypted) only until the
 // owner opens /setup and confirms they saved it, then forgets it and keeps the hash.
-// Only the first browser that opens /setup sees the key (it gets a cookie); anyone
-// else is told the key was already shown, so a stolen key cannot go unnoticed.
-// The key is never written to logs. SCOUT_APP_KEY (a hosting secret) skips all this.
+// The key is shown only through a private link (/setup?code=...) that Scout prints in
+// its server log, which only the owner can read. The browser that opens the link gets
+// a cookie; only that browser can confirm. The key itself is never written to logs.
+// SCOUT_APP_KEY (a hosting secret) skips all this.
 export interface SetupRecord {
   status: 'pending' | 'claimed' | 'env' | 'expired';
   keyId: string;
@@ -16,6 +17,7 @@ export interface SetupRecord {
   claimedAt?: number;
   viewer?: string;
   shownAt?: number;
+  codeEnc?: string;
 }
 
 const SETTING = 'setup.app_key';
@@ -51,6 +53,7 @@ async function startNewKey(db: Db, secrets: Secrets, config: Config, projectId: 
     status: 'pending',
     keyId: key.id,
     enc: secrets.encrypt(plaintext, 'setup-key'),
+    codeEnc: secrets.encrypt(randomBase62(20), 'setup-code'),
     windowEndsAt: Date.now() + config.setupWindowMinutes * 60_000,
   };
   await write(db, rec);
@@ -77,8 +80,10 @@ export async function ensureAppKey(db: Db, secrets: Secrets, config: Config, pro
     let key = await findKeyByPlaintext(db, config.appKeyFromEnv);
     if (!key) {
       key = (await createKey(db, { projectId, name: 'App key from SCOUT_APP_KEY', source: 'env', plaintext: config.appKeyFromEnv, rateLimitPerMin: config.limits.appKeyRequestsPerMinute })).key;
-    } else if (keyStatus(key) !== 'active') {
-      await reactivateKey(db, key.id);
+    } else {
+      // e.g. the key /setup showed, now kept as a hosting secret: it becomes the env key.
+      if (keyStatus(key) !== 'active') await reactivateKey(db, key.id);
+      if (key.source !== 'env') await markEnvKey(db, key.id);
     }
     // The hosting secret is the one valid key: any other key (e.g. one shown at /setup
     // earlier) stops working.
@@ -97,8 +102,15 @@ export async function ensureAppKey(db: Db, secrets: Secrets, config: Config, pro
   return existing;
 }
 
+// The private setup link Scout prints in its log while a key is waiting.
+export async function setupLinkCode(db: Db, secrets: Secrets): Promise<string | null> {
+  const rec = await read(db);
+  if (!rec || rec.status !== 'pending' || windowClosed(rec) || !rec.codeEnc) return null;
+  return secrets.decrypt(rec.codeEnc, 'setup-code');
+}
+
 export interface SetupView {
-  status: SetupRecord['status'] | 'shown_elsewhere';
+  status: SetupRecord['status'] | 'shown_elsewhere' | 'need_code';
   appKey?: string;
   windowEndsAt?: number;
   shownAt?: number;
@@ -108,21 +120,22 @@ export interface SetupView {
 
 const viewerMatches = (rec: SetupRecord, token: string | undefined) => !!rec.viewer && !!token && safeEqual(sha256Hex(token), rec.viewer);
 
-export async function setupView(db: Db, secrets: Secrets, viewerToken?: string, attempt = 0): Promise<SetupView> {
+// The browser holding the cookie sees the key. Anyone with the private link's code also
+// sees it, and their browser takes over (so the owner can switch browsers). Without
+// either, no key is shown.
+export async function setupView(db: Db, secrets: Secrets, viewerToken?: string, code?: string, attempt = 0): Promise<SetupView> {
   const row = await readRaw(db);
   if (!row) return { status: 'expired' };
   const { rec, raw } = row;
   if (windowClosed(rec)) return { status: (await closeWindow(db, rec)).status };
   if (rec.status !== 'pending') return { status: rec.status };
   const appKey = () => secrets.decrypt(rec.enc!, 'setup-key');
-  if (rec.viewer) {
-    if (viewerMatches(rec, viewerToken)) return { status: 'pending', appKey: appKey(), windowEndsAt: rec.windowEndsAt };
-    return { status: 'shown_elsewhere', shownAt: rec.shownAt, windowEndsAt: rec.windowEndsAt };
-  }
+  if (viewerMatches(rec, viewerToken)) return { status: 'pending', appKey: appKey(), windowEndsAt: rec.windowEndsAt };
+  const codeOk = !!code && !!rec.codeEnc && safeEqual(code, secrets.decrypt(rec.codeEnc, 'setup-code'));
+  if (!codeOk) return rec.viewer ? { status: 'shown_elsewhere', shownAt: rec.shownAt, windowEndsAt: rec.windowEndsAt } : { status: 'need_code', windowEndsAt: rec.windowEndsAt };
   const token = randomBase62(32);
   if (!(await replace(db, raw, { ...rec, viewer: sha256Hex(token), shownAt: Date.now() }))) {
-    // Another browser got there at the same moment; look again.
-    return attempt < 3 ? setupView(db, secrets, viewerToken, attempt + 1) : { status: 'shown_elsewhere', windowEndsAt: rec.windowEndsAt };
+    return attempt < 3 ? setupView(db, secrets, viewerToken, code, attempt + 1) : { status: 'shown_elsewhere', windowEndsAt: rec.windowEndsAt };
   }
   return { status: 'pending', appKey: appKey(), windowEndsAt: rec.windowEndsAt, newViewerToken: token };
 }

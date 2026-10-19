@@ -47,11 +47,15 @@ export function setupPage(p: { view: SetupView; publicUrl: string; ai: RuntimeSt
 document.getElementById('copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.getElementById('k').textContent);document.getElementById('msg').textContent='Copied.'}catch(e){document.getElementById('msg').textContent='Press and hold the key to copy it.'}};
 document.getElementById('done').onclick=async()=>{if(!confirm('Have you saved the key somewhere safe? It cannot be shown again.'))return;var ok=false;try{ok=(await (await fetch('/setup/confirm',{method:'POST'})).json()).ok===true}catch(e){}if(ok)location.reload();else document.getElementById('msg').textContent='Could not confirm. Open this page directly in your browser (not inside another page) and try again.'};
 </script>`;
+  } else if (p.view.status === 'need_code') {
+    keyBlock = `<div class="card"><h2>Your Scout app key is ready</h2>
+<p>For safety, the key is shown only through a <b>private link</b> that Scout wrote in its server log. Only you can see that log.</p>
+<ol><li>Open your hosting's logs: on Hugging Face, the <b>Logs</b> button of your Space; on your own server, <code>docker compose logs scout</code>; in a Codespace, the terminal.</li>
+<li>Find the line <b>First-time setup: open this private link</b> and open that link in this browser within the next ${Math.max(1, Math.round(((p.view.windowEndsAt ?? Date.now()) - Date.now()) / 60_000))} minutes.</li></ol></div>`;
   } else if (p.view.status === 'shown_elsewhere') {
     const at = p.view.shownAt ? ` at ${new Date(p.view.shownAt).toISOString().slice(11, 16)} UTC` : '';
-    keyBlock = `<div class="card"><h2 class="warn">The key was already shown in another browser${at}</h2>
-<p>For safety, the key is shown to one browser only. If that was you, open this page in that same browser to copy the key and press <b>I saved the key</b>.</p>
-<p>If it was <b>not</b> you, someone else may have the key. In your hosting settings add <code>SCOUT_NEW_APP_KEY=true</code>, restart Scout, open this page again, then remove that setting. The old key then stops working.</p></div>`;
+    keyBlock = `<div class="card"><h2 class="warn">The key is open in another browser${at}</h2>
+<p>To see it in this browser instead, open the private link from Scout's server log again (look for <b>First-time setup: open this private link</b>).</p></div>`;
   } else if (p.view.status === 'claimed' || p.view.status === 'env') {
     keyBlock = `<div class="card"><h2 class="ok">Scout is set up</h2><p>The app key was saved${p.view.status === 'env' ? ' as the SCOUT_APP_KEY hosting secret' : ''}. For safety it is never shown again.</p>
 <p class="muted">${

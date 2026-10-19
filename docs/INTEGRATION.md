@@ -9,9 +9,9 @@ Scout is a separate AI agent service. LoginLens owns the users and their data. S
 | Thing | What it is | Where it lives |
 |---|---|---|
 | `SCOUT_URL` | Address of the Scout server, e.g. `https://your-scout.hf.space` | LoginLens server secrets |
-| `SCOUT_APP_KEY` (`sct_sec_...`) | **The credential LoginLens uses to call Scout.** Scout creates it automatically on first start and shows it at `SCOUT_URL/setup` to the **first browser** that opens that page, for 60 minutes. After copying it, press **I saved the key** on that page. | LoginLens **server** secrets only. Never in browser code, never in Git. |
+| `SCOUT_APP_KEY` (`sct_sec_...`) | **The credential LoginLens uses to call Scout.** Scout creates it automatically on first start. The owner opens the private link Scout prints in its server log (`SCOUT_URL/setup?code=...`, valid 60 minutes), copies the key and presses **I saved the key**. | LoginLens **server** secrets only. Never in browser code, never in Git. |
 | User token (`sct_ut_...`) | Short-lived pass (default 15 min) for **one signed-in LoginLens user**, so the chat window in the browser can talk to Scout. | Created by the LoginLens server on demand; held only in browser memory. |
-| `signing_secret` (`whsec_...`) | Secret Scout uses to sign its calls to LoginLens's data endpoint. Returned when LoginLens registers the endpoint, and **the same every time** LoginLens registers again (so several LoginLens servers agree), unless `rotate_secret: true` is sent. | LoginLens server memory/secrets. |
+| `signing_secret` (`whsec_...`) | Secret Scout uses to sign its calls to LoginLens's data endpoint. Returned when LoginLens registers the endpoint, and **the same every time** LoginLens registers again with the same app key (so several LoginLens servers agree). It changes when a new app key registers, or when `rotate_secret: true` is sent. | LoginLens server memory/secrets. |
 | The AI model | A free open-source model (Qwen3.5 4B) running **inside the Scout server** with Ollama. | Scout server. **There is no AI API key anywhere.** |
 
 LoginLens users never see or enter any key.
@@ -239,7 +239,7 @@ curl -X POST "$SCOUT_URL/v1/app-key/rotate" -H "authorization: Bearer $SCOUT_APP
 ```
 The response contains the new key once. Update the LoginLens secret; the old key keeps working for `grace_seconds`. (If the key was set on Scout as the `SCOUT_APP_KEY` hosting secret, rotation is refused: change that secret instead.)
 
-If the key is ever lost or leaked: in Scout's hosting settings add `SCOUT_NEW_APP_KEY=true`, restart Scout, open `SCOUT_URL/setup` to get a new key, then remove that setting. All older keys stop working.
+If the key is ever lost or leaked, the Scout owner follows "Lost or leaked key" in DEPLOY.md. All older keys stop working, and the next registration with the new key returns a new `signing_secret`.
 
 ## 7. Limits Scout enforces
 
