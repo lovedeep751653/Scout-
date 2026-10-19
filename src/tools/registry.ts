@@ -1,3 +1,5 @@
+import { cardSummaryForModel, type Card } from '../agent/cards.ts';
+import { getLoginLensConnector, LOGINLENS_TOOL_NAMES, loginLensTools } from '../connectors/loginlens.ts';
 import type { Config } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import type { Project } from '../keys/projects.ts';
@@ -27,9 +29,14 @@ export interface ToolDefinition {
   inputSchema: JsonSchema;
   permission: Permission;
   source: 'builtin' | 'webhook' | 'connector';
+  // Off unless the app turns it on (settings.enabled_tools). Small models misuse tools
+  // that do not fit the task, so only relevant tools are offered by default.
+  optIn?: boolean;
   // Short text the widget shows while the tool runs, e.g. "Checking your emails".
   label?: string;
   summarize?: (args: Record<string, unknown>) => string;
+  // Builds a verified answer card from the tool data (see agent/cards.ts).
+  card?: (args: Record<string, unknown>, data: unknown, staleDays: number) => Card | null;
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
 
@@ -42,7 +49,8 @@ export interface PendingActionView {
 
 export type ToolEvent =
   | { type: 'tool'; name: string; label: string; status: 'running' | 'done' | 'error' | 'needs_confirmation' }
-  | { type: 'action'; action: PendingActionView };
+  | { type: 'action'; action: PendingActionView }
+  | { type: 'card'; card: Card };
 
 export function toSpec(t: ToolDefinition): ToolSpec {
   return { name: t.name, description: t.description, inputSchema: t.inputSchema };
@@ -124,10 +132,16 @@ export class ToolRegistry {
 
   async forProject(db: Db, project: Project, secrets: Secrets, config: Config): Promise<ToolDefinition[]> {
     const disabled = new Set(project.settings.disabledTools ?? []);
-    const tools = [...this.builtins.values()].filter((t) => !disabled.has(t.name));
+    const enabled = new Set(project.settings.enabledTools ?? []);
+    const tools = [...this.builtins.values()].filter((t) => !disabled.has(t.name) && (!t.optIn || enabled.has(t.name)));
     const rows = await db.all<WebhookRow>('SELECT * FROM webhook_tools WHERE project_id = ? AND enabled = 1 ORDER BY name', [project.id]);
+    const connector = await getLoginLensConnector(db, project.id);
+    if (connector) {
+      for (const t of loginLensTools(connector, secrets, config, project.id)) if (!disabled.has(t.name)) tools.push(t);
+    }
+    const taken = new Set(tools.map((t) => t.name));
     for (const row of rows) {
-      if (disabled.has(row.name) || this.builtins.has(row.name)) continue;
+      if (disabled.has(row.name) || taken.has(row.name)) continue;
       tools.push(webhookTool(row, secrets, config));
     }
     return tools;
@@ -178,7 +192,7 @@ export class ToolInputError extends Error {}
 export async function upsertWebhookTool(db: Db, secrets: Secrets, config: Config, registry: ToolRegistry, projectId: string, input: WebhookToolInput) {
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!TOOL_NAME.test(name)) throw new ToolInputError('name must start with a letter and use only letters, numbers, _ or - (max 64).');
-  if (registry.builtinNames().includes(name)) throw new ToolInputError(`"${name}" is a built-in tool name. Pick another name.`);
+  if (registry.builtinNames().includes(name) || LOGINLENS_TOOL_NAMES.includes(name)) throw new ToolInputError(`"${name}" is a built-in tool name. Pick another name.`);
   const description = typeof input.description === 'string' ? input.description.trim().slice(0, 1000) : '';
   if (description.length < 10) throw new ToolInputError('description must explain what the tool does (at least 10 characters).');
   const schemaError = checkToolSchema(input.input_schema);
@@ -234,13 +248,41 @@ export async function deleteWebhookTool(db: Db, projectId: string, name: string)
 export interface ToolRunOutcome {
   parts: Part[];
   pending: PendingActionView[];
+  cards: Card[];
+  repeatsOnly: boolean;
 }
 
-export async function runToolCalls(calls: ToolCall[], tools: ToolDefinition[], ctx: ToolContext, emit: (e: ToolEvent) => void): Promise<ToolRunOutcome> {
+function callKey(call: ToolCall): string {
+  const sorted = Object.keys(call.args).sort().reduce<Record<string, unknown>>((o, k) => ((o[k] = call.args[k]), o), {});
+  return `${call.name}:${JSON.stringify(sorted)}`;
+}
+
+// `memo` remembers results within one agent run. Small models sometimes repeat the same
+// call instead of answering; they get the earlier result back with a nudge to answer.
+export async function runToolCalls(
+  calls: ToolCall[],
+  tools: ToolDefinition[],
+  ctx: ToolContext,
+  emit: (e: ToolEvent) => void,
+  memo: Map<string, string> = new Map(),
+): Promise<ToolRunOutcome> {
   const byName = new Map(tools.map((t) => [t.name, t]));
   const pending: PendingActionView[] = [];
+  const cards: Card[] = [];
+  let repeats = 0;
   const parts = await Promise.all(
     calls.map(async (call): Promise<Part> => {
+      const key = callKey(call);
+      const previous = memo.get(key);
+      if (previous !== undefined) {
+        repeats++;
+        return {
+          type: 'tool_result',
+          callId: call.id,
+          name: call.name,
+          content: `${previous}\n\nNOTE: You already called ${call.name} with the same input and got the result above. Do not call it again. Answer the user now.`,
+        };
+      }
       const tool = byName.get(call.name);
       const base = { projectId: ctx.projectId, keyId: ctx.keyId, sessionId: ctx.sessionId, userId: ctx.userId, toolName: call.name };
       if (!tool) {
@@ -277,7 +319,14 @@ export async function runToolCalls(calls: ToolCall[], tools: ToolDefinition[], c
         const data = await withTimeout(ctx.config.toolTimeoutMs, ctx.signal, (signal) => tool.handler(call.args, { ...ctx, signal }));
         emit({ type: 'tool', name: tool.name, label, status: 'done' });
         await audit(ctx.db, { ...base, event: 'tool_call', status: 'ok', durationMs: Date.now() - started, detail: { args: call.args } });
-        return { type: 'tool_result', callId: call.id, name: call.name, content: wrapToolOutput(tool.name, data) };
+        const card = tool.card?.(call.args, data, ctx.config.staleDataDays) ?? null;
+        if (card) {
+          cards.push(card);
+          emit({ type: 'card', card });
+        }
+        const content = card ? wrapToolOutput(tool.name, { ...cardSummaryForModel(card), details: data }) : wrapToolOutput(tool.name, data);
+        memo.set(key, content);
+        return { type: 'tool_result', callId: call.id, name: call.name, content };
       } catch (err) {
         const message = err instanceof WebhookError || err instanceof Error ? err.message : 'The tool failed.';
         emit({ type: 'tool', name: tool.name, label, status: 'error' });
@@ -286,7 +335,7 @@ export async function runToolCalls(calls: ToolCall[], tools: ToolDefinition[], c
       }
     }),
   );
-  return { parts, pending };
+  return { parts, pending, cards, repeatsOnly: repeats === calls.length };
 }
 
 // ---------- confirmations (enforced by the server, not by the prompt) ----------

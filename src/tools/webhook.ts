@@ -34,7 +34,7 @@ export class WebhookError extends Error {}
 
 const BLOCKED_HOSTS = /(^|\.)(localhost|local|internal|localdomain|home\.arpa)$/i;
 
-export function checkWebhookUrl(raw: string, allowHttp: boolean): URL {
+export function checkWebhookUrl(raw: string, allowHttp: boolean, allowPrivateNetwork = false): URL {
   let url: URL;
   try {
     url = new URL(raw);
@@ -44,8 +44,8 @@ export function checkWebhookUrl(raw: string, allowHttp: boolean): URL {
   if (url.protocol !== 'https:' && !(allowHttp && url.protocol === 'http:')) throw new WebhookError('The webhook URL must start with https://');
   if (url.username || url.password) throw new WebhookError('The webhook URL must not contain a username or password.');
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  if (BLOCKED_HOSTS.test(host)) throw new WebhookError('The webhook URL points to a private address.');
-  if (isIP(host) && isBlockedIp(host)) throw new WebhookError('The webhook URL points to a private address.');
+  if (!allowPrivateNetwork && BLOCKED_HOSTS.test(host)) throw new WebhookError('The webhook URL points to a private address.');
+  if (!allowPrivateNetwork && isIP(host) && isBlockedIp(host)) throw new WebhookError('The webhook URL points to a private address.');
   if (raw.length > 2000) throw new WebhookError('The webhook URL is too long.');
   return url;
 }
@@ -61,9 +61,9 @@ export interface WebhookCall {
   maxResponseBytes: number;
   allowHttp?: boolean;
   maxRequestBytes?: number;
-  // Test-only switches; never read from the environment.
   resolver?: Resolver;
-  allowPrivateForTests?: boolean;
+  // Only for the owner's own LoginLens server on a private network (opt-in setting).
+  allowPrivateNetwork?: boolean;
 }
 
 export interface WebhookResult {
@@ -76,13 +76,13 @@ export function signBody(secret: string, timestamp: number, body: string): strin
 }
 
 export async function callWebhook(call: WebhookCall): Promise<WebhookResult> {
-  const url = checkWebhookUrl(call.url, call.allowHttp ?? false);
+  const url = checkWebhookUrl(call.url, call.allowHttp ?? false, call.allowPrivateNetwork ?? false);
   const body = JSON.stringify(call.payload);
   if (Buffer.byteLength(body) > (call.maxRequestBytes ?? 32_768)) throw new WebhookError('The tool input is too large to send.');
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await (call.resolver ?? defaultResolver)(host).catch(() => []);
   if (addresses.length === 0) throw new WebhookError('Could not find the webhook server (DNS lookup failed).');
-  if (!call.allowPrivateForTests && addresses.some((a) => isBlockedIp(a.address))) {
+  if (!call.allowPrivateNetwork && addresses.some((a) => isBlockedIp(a.address))) {
     throw new WebhookError('The webhook URL points to a private address.');
   }
   const chosen = addresses[0]!;

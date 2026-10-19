@@ -227,7 +227,7 @@ export class GeminiProvider implements ModelProvider {
       ...(tools.length
         ? {
             tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parametersJsonSchema: t.inputSchema })) }],
-            toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+            toolConfig: { functionCallingConfig: { mode: req.toolChoice === 'none' ? 'NONE' : 'AUTO' } },
           }
         : {}),
       generationConfig: {

@@ -155,6 +155,7 @@ export class AnthropicProvider implements ModelProvider {
               description: t.description,
               input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
             })),
+            ...(req.toolChoice === 'none' ? { tool_choice: { type: 'none' as const } } : {}),
           }
         : {}),
       ...(this.effort ? { output_config: { effort: this.effort } } : {}),

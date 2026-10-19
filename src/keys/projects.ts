@@ -1,5 +1,6 @@
 import type { Db } from '../db/index.ts';
 import { newId } from '../security/crypto.ts';
+import { cleanOrigins } from './keys.ts';
 
 export interface ProjectSettings {
   agentName?: string;
@@ -12,8 +13,10 @@ export interface ProjectSettings {
   theme?: 'auto' | 'light' | 'dark';
   quickReplies?: string[];
   disabledTools?: string[];
+  enabledTools?: string[];
   answerStyle?: 'evidence' | 'plain';
   alertEmail?: string;
+  allowedOrigins?: string[];
 }
 
 export interface Project {
@@ -63,11 +66,19 @@ export function sanitizeSettings(input: Record<string, unknown>, base: ProjectSe
   if ('quickReplies' in input && Array.isArray(input.quickReplies)) {
     out.quickReplies = input.quickReplies.map((q) => s(q, 80)).filter((q): q is string => !!q).slice(0, 6);
   }
-  if ('disabledTools' in input && Array.isArray(input.disabledTools)) {
-    out.disabledTools = input.disabledTools.map((q) => s(q, 64)).filter((q): q is string => !!q).slice(0, 100);
+  for (const k of ['disabledTools', 'enabledTools'] as const) {
+    const v = input[k];
+    if (k in input && Array.isArray(v)) out[k] = v.map((q) => s(q, 64)).filter((q): q is string => !!q).slice(0, 100);
   }
   if ('alertEmail' in input) out.alertEmail = s(input.alertEmail, 200) || undefined;
+  if ('allowedOrigins' in input) out.allowedOrigins = cleanOrigins(input.allowedOrigins);
   return out;
+}
+
+export async function ensureDefaultProject(db: Db, name = 'LoginLens'): Promise<Project> {
+  const existing = await listProjects(db);
+  if (existing[0]) return existing[0];
+  return createProject(db, name);
 }
 
 export async function createProject(db: Db, name: string, settings: ProjectSettings = {}): Promise<Project> {

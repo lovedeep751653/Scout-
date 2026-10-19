@@ -47,6 +47,8 @@ export interface GenerateRequest {
   system: string;
   messages: Message[];
   tools?: ToolSpec[];
+  // 'none' makes the model answer in text without calling tools (used on the last step).
+  toolChoice?: 'auto' | 'none';
   maxTokens?: number;
   signal?: AbortSignal;
 }

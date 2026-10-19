@@ -23,12 +23,11 @@ export const MIGRATIONS: Migration[] = [
       `CREATE TABLE api_keys (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
         name TEXT NOT NULL,
         key_hash TEXT NOT NULL UNIQUE,
         key_hint TEXT NOT NULL,
         scopes TEXT NOT NULL,
-        allowed_origins TEXT NOT NULL DEFAULT '[]',
+        source TEXT NOT NULL,
         rate_limit_per_min INTEGER NOT NULL,
         monthly_token_budget BIGINT NOT NULL,
         expires_at BIGINT,
@@ -38,16 +37,26 @@ export const MIGRATIONS: Migration[] = [
         created_at BIGINT NOT NULL
       )`,
       `CREATE INDEX api_keys_project ON api_keys(project_id)`,
-      `CREATE TABLE usage_monthly (
-        key_id TEXT NOT NULL,
-        month TEXT NOT NULL,
+      `CREATE TABLE usage_counters (
+        subject TEXT NOT NULL,
+        period TEXT NOT NULL,
         project_id TEXT NOT NULL,
         requests INTEGER NOT NULL DEFAULT 0,
         input_tokens BIGINT NOT NULL DEFAULT 0,
         output_tokens BIGINT NOT NULL DEFAULT 0,
         cost_micro_usd BIGINT NOT NULL DEFAULT 0,
-        alert_80_sent INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (key_id, month)
+        alert_sent INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (subject, period)
+      )`,
+      `CREATE TABLE connectors (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        secret_enc TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        PRIMARY KEY (project_id, name)
       )`,
       `CREATE TABLE sessions (
         id TEXT PRIMARY KEY,

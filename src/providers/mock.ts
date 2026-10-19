@@ -53,7 +53,7 @@ export const defaultMockScript: MockScript = (req) => {
     return { text: `Here is what I found (mock AI):\n${lines.join('\n')}` };
   }
   const text = user?.parts.map((p) => (p.type === 'text' ? p.text : '')).join(' ') ?? '';
-  const tools = new Set((req.tools ?? []).map((t) => t.name));
+  const tools = new Set(req.toolChoice === 'none' ? [] : (req.tools ?? []).map((t) => t.name));
   const lower = text.toLowerCase();
   if (tools.has('current_datetime') && /(time|date|samay|kitne baje|aaj|समय|तारीख)/.test(lower)) {
     return { toolCalls: [{ name: 'current_datetime', args: {} }] };

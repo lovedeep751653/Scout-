@@ -13,6 +13,7 @@ export function createBaseProvider(settings: ProviderSettings, config: Config): 
       return new AnthropicProvider(settings, opts);
     case 'gemini':
       return new GeminiProvider(settings, opts);
+    case 'ollama':
     case 'groq':
     case 'openrouter':
     case 'openai-compatible':

@@ -98,7 +98,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 
   private headers(): Record<string, string> {
-    const h: Record<string, string> = { authorization: `Bearer ${this.settings.apiKey}` };
+    const h: Record<string, string> = {};
+    if (this.settings.apiKey) h.authorization = `Bearer ${this.settings.apiKey}`;
     if (this.settings.provider === 'openrouter') {
       h['HTTP-Referer'] = this.publicUrl;
       h['X-Title'] = 'Scout';
@@ -107,7 +108,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 
   private body(req: GenerateRequest, stream: boolean): Record<string, unknown> {
-    const tools = req.tools ?? [];
+    // Some local runtimes ignore tool_choice "none", so the tools are simply not sent.
+    const tools = req.toolChoice === 'none' ? [] : (req.tools ?? []);
     const maxField = /(^|\.)api\.openai\.com$/i.test(new URL(this.settings.baseUrl).hostname) ? 'max_completion_tokens' : 'max_tokens';
     return {
       model: this.model,
@@ -119,6 +121,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
             tool_choice: 'auto',
           }
         : {}),
+      ...(this.settings.reasoningEffort ? { reasoning_effort: this.settings.reasoningEffort } : {}),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
     };
   }

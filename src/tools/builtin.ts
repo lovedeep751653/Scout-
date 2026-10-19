@@ -8,6 +8,7 @@ export const currentDatetime: ToolDefinition = {
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   permission: 'read',
   source: 'builtin',
+  optIn: true,
   label: 'Checking the date',
   handler: async () => {
     const now = new Date();
@@ -29,6 +30,7 @@ export const rememberNote: ToolDefinition = {
   },
   permission: 'write_confirm',
   source: 'builtin',
+  optIn: true,
   label: 'Saving a note',
   summarize: (args) => `Save this note: "${String(args.text).slice(0, 200)}"`,
   handler: async (args, ctx) => {
@@ -46,6 +48,7 @@ export const listNotes: ToolDefinition = {
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   permission: 'read',
   source: 'builtin',
+  optIn: true,
   label: 'Reading your notes',
   handler: async (_args, ctx) => {
     const rows = await ctx.db.all<{ text: string; created_at: number }>(

@@ -66,6 +66,7 @@ export interface Config {
   userTokenMaxTtlSeconds: number;
   limits: Limits;
   webhookAllowHttp: boolean;
+  connectorAllowPrivateNetwork: boolean;
   webhookTimeoutMs: number;
   webhookMaxResponseBytes: number;
   priceInputPerM: number | null;
@@ -213,7 +214,8 @@ export function loadConfig(env: Env = process.env): Config {
       autostart: bool(env, 'OLLAMA_AUTOSTART', local),
       bin: str(env, 'OLLAMA_BIN', 'ollama'),
       contextLength: int(env, 'OLLAMA_CONTEXT_LENGTH', 8192, 2048, 262_144),
-      keepAlive: str(env, 'OLLAMA_KEEP_ALIVE', '-1'),
+      // Ollama needs a unit; a negative duration keeps the model loaded until restart.
+      keepAlive: str(env, 'OLLAMA_KEEP_ALIVE', '-1m'),
       modelsDir: str(env, 'OLLAMA_MODELS', path.join(dataDir, 'ollama-models')),
       autoPull: bool(env, 'OLLAMA_AUTO_PULL', true),
     },
@@ -240,6 +242,7 @@ export function loadConfig(env: Env = process.env): Config {
       maxQueuedChats: int(env, 'MAX_QUEUED_CHATS', 8, 0, 1000),
     },
     webhookAllowHttp: bool(env, 'WEBHOOK_ALLOW_HTTP', false),
+    connectorAllowPrivateNetwork: bool(env, 'CONNECTOR_ALLOW_PRIVATE_NETWORK', false),
     webhookTimeoutMs: int(env, 'WEBHOOK_TIMEOUT_MS', 8000, 500, 15_000),
     webhookMaxResponseBytes: int(env, 'WEBHOOK_MAX_RESPONSE_BYTES', 65_536, 1024, 1_048_576),
     priceInputPerM: num(env, 'MODEL_PRICE_INPUT_PER_M'),
