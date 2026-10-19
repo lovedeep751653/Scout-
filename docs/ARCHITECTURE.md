@@ -81,9 +81,11 @@ A separate computer is not needed: everything runs in one container. An optional
 
 ## Security summary
 
-- **Keys:** only a SHA-256 fingerprint of the app key is stored. The key is never logged, never returned except once at `/setup` or on rotation, and is rejected when sent from a browser (an `Origin` header means a browser). Browsers use 15-minute signed user tokens instead.
+- **Keys:** only a SHA-256 fingerprint of the app key is stored. The key is never logged, never returned except at `/setup` or on rotation, and is rejected when sent from a browser (an `Origin` header means a browser). Browsers use 15-minute signed user tokens instead.
+- **First-run setup:** `/setup` shows the key only to the first browser that opens it (an HttpOnly cookie), and only that browser can confirm it. Any other visitor is told the key was already shown, so a stolen key cannot go unnoticed; `SCOUT_NEW_APP_KEY=true` then replaces it. A key LoginLens has already used is never thrown away on restart. When `SCOUT_APP_KEY` is set as a hosting secret, it is the only valid key.
 - **Isolation:** sessions, notes and actions are always looked up by (project, user). Tools get the user id from the authenticated context; LoginLens is told to return only that user's data.
-- **Writes:** tools marked `write_confirm` never run from the AI. They create a pending action that only the same user can confirm, once, within 10 minutes. Deleting data is not available to the AI at all.
+- **Writes:** tools marked `write_confirm` never run from the AI. They create a pending action that only the same user can confirm, once, within 10 minutes. The Confirm text always shows every argument in full; a request too long to show is refused instead of being cut. Deleting data is not available to the AI at all.
+- **Demo:** `/demo` visitors only ever get sample data and never the owner's real tools. They may use at most 2 places in the waiting line, and demo tokens have a cap for all visitors together.
 - **Prompt injection:**
   - Tool output is wrapped as `untrusted_data`.
   - Instruction-like sentences are replaced with `[suspicious text removed]`.
@@ -93,7 +95,7 @@ A separate computer is not needed: everything runs in one container. An optional
 - **Network:** webhook and connector calls require HTTPS, block private and reserved IP ranges (including `localhost.`-style names), pin the resolved IP, follow no redirects, time out after 8 s and accept at most 64 KB.
 - **Abuse limits:**
   - Per user: 6 messages per minute, 200 per day, and a monthly token cap.
-  - Per app key: 120 requests per minute. Per IP: 30 per minute.
+  - Per app key: 120 requests per minute. Per IP: 30 per minute. Behind a proxy, set `TRUST_PROXY` to the number of proxies (the VPS setup uses 1) so clients cannot fake their address.
   - Failed logins are throttled.
   - One answer is generated at a time, with a short waiting line.
 - **Logs:** emails, keys and tokens are masked. The audit log records every tool call and action, with sensitive fields redacted.

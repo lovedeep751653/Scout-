@@ -29,7 +29,7 @@ export interface Config {
   port: number;
   host: string;
   publicUrl: string;
-  trustProxy: boolean;
+  trustProxy: boolean | number;
   logLevel: string;
   dataDir: string;
   databaseUrl: string;
@@ -142,6 +142,16 @@ function num(env: Env, name: string): number | null {
   return n;
 }
 
+// true trusts every X-Forwarded-For entry; a number trusts only that many proxies in
+// front of Scout (safer: a client cannot fake its address to dodge per-IP limits).
+function trustProxySetting(env: Env): boolean | number {
+  const raw = str(env, 'TRUST_PROXY').toLowerCase();
+  if (!raw || ['true', 'yes', 'on'].includes(raw)) return true;
+  if (['false', 'no', 'off', '0'].includes(raw)) return false;
+  if (/^[1-9]\d?$/.test(raw)) return Number(raw);
+  throw new ConfigError('TRUST_PROXY must be true, false, or the number of proxies in front of Scout (for example 1).');
+}
+
 function bool(env: Env, name: string, fallback: boolean): boolean {
   const raw = str(env, name).toLowerCase();
   if (!raw) return fallback;
@@ -216,7 +226,7 @@ export function loadConfig(env: Env = process.env): Config {
     port,
     host: str(env, 'HOST', '0.0.0.0'),
     publicUrl: detectPublicUrl(env, port),
-    trustProxy: bool(env, 'TRUST_PROXY', true),
+    trustProxy: trustProxySetting(env),
     logLevel: str(env, 'LOG_LEVEL', 'info'),
     dataDir,
     databaseUrl: str(env, 'DATABASE_URL'),

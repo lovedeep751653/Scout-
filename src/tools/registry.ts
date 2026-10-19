@@ -162,6 +162,8 @@ export class ToolRegistry {
     if (connector || opts.demo) {
       for (const t of loginLensTools(connector, secrets, config, project.id)) if (!disabled.has(t.name)) tools.push(t);
     }
+    // Anonymous demo visitors only ever get sample data, never the owner's real webhooks.
+    if (opts.demo) return tools;
     const taken = new Set(tools.map((t) => t.name));
     for (const row of rows) {
       if (disabled.has(row.name) || taken.has(row.name)) continue;
@@ -169,6 +171,12 @@ export class ToolRegistry {
     }
     return tools;
   }
+}
+
+// Every argument is shown in full: the user must see exactly what Confirm will run.
+function describeArgs(args: Record<string, unknown>): string {
+  const parts = Object.entries(args).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  return parts.length ? parts.join('; ') : 'no input';
 }
 
 function webhookTool(row: WebhookRow, secrets: Secrets, config: Config): ToolDefinition {
@@ -179,7 +187,7 @@ function webhookTool(row: WebhookRow, secrets: Secrets, config: Config): ToolDef
     permission: row.permission === 'write_confirm' ? 'write_confirm' : 'read',
     source: 'webhook',
     label: `Asking ${row.name.replace(/_/g, ' ')}`,
-    summarize: (args) => `Run "${row.name}" with ${JSON.stringify(args).slice(0, 200)}`,
+    summarize: (args) => `Run "${row.name}" with ${describeArgs(args)}`,
     handler: async (args, ctx) => {
       const result = await callWebhook({
         url: row.url,
@@ -326,6 +334,16 @@ export async function runToolCalls(
       }
       if (tool.permission === 'write_confirm') {
         const action = await createPendingAction(ctx, tool, call.args);
+        if (!action) {
+          await audit(ctx.db, { ...base, event: 'tool_pending', status: 'too_long' });
+          return {
+            type: 'tool_result',
+            callId: call.id,
+            name: call.name,
+            content: 'This request is too long to show to the user for confirmation, so it was not prepared. Ask the user for a shorter version.',
+            isError: true,
+          };
+        }
         pending.push(action);
         emit({ type: 'tool', name: tool.name, label, status: 'needs_confirmation' });
         emit({ type: 'action', action });
@@ -368,11 +386,16 @@ export async function runToolCalls(
 
 // ---------- confirmations (enforced by the server, not by the prompt) ----------
 
-async function createPendingAction(ctx: ToolContext, tool: ToolDefinition, args: Record<string, unknown>): Promise<PendingActionView> {
+export const MAX_CONFIRM_CHARS = 1000;
+
+// Returns null when the summary would have to be cut: a confirmation must never hide
+// part of what runs.
+async function createPendingAction(ctx: ToolContext, tool: ToolDefinition, args: Record<string, unknown>): Promise<PendingActionView | null> {
   const id = newId('act');
   const now = Date.now();
   const expires = now + ctx.config.pendingActionTtlMs;
-  const summary = cleanText(tool.summarize?.(args) ?? `Run ${tool.name}`, 300);
+  const summary = cleanText(tool.summarize?.(args) ?? `Run ${tool.name} with ${describeArgs(args)}`, MAX_CONFIRM_CHARS + 1);
+  if (summary.length > MAX_CONFIRM_CHARS) return null;
   await ctx.db.run(
     'INSERT INTO pending_actions (id, project_id, session_id, user_id, key_id, tool_name, args, summary, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [id, ctx.projectId, ctx.sessionId, ctx.userId, ctx.keyId, tool.name, JSON.stringify(args), summary, 'pending', now, expires],

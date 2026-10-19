@@ -45,13 +45,18 @@ export function setupPage(p: { view: SetupView; publicUrl: string; ai: RuntimeSt
 <div class="card"><h2>Try Scout now</h2><p>Open the <a href="/demo">demo page</a> to chat with Scout using made-up sample data (works during this setup hour, or when DEMO_MODE=true).</p></div>
 <script>
 document.getElementById('copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.getElementById('k').textContent);document.getElementById('msg').textContent='Copied.'}catch(e){document.getElementById('msg').textContent='Press and hold the key to copy it.'}};
-document.getElementById('done').onclick=async()=>{if(!confirm('Have you saved the key somewhere safe? It cannot be shown again.'))return;await fetch('/setup/confirm',{method:'POST'});location.reload()};
+document.getElementById('done').onclick=async()=>{if(!confirm('Have you saved the key somewhere safe? It cannot be shown again.'))return;var ok=false;try{ok=(await (await fetch('/setup/confirm',{method:'POST'})).json()).ok===true}catch(e){}if(ok)location.reload();else document.getElementById('msg').textContent='Could not confirm. Open this page directly in your browser (not inside another page) and try again.'};
 </script>`;
+  } else if (p.view.status === 'shown_elsewhere') {
+    const at = p.view.shownAt ? ` at ${new Date(p.view.shownAt).toISOString().slice(11, 16)} UTC` : '';
+    keyBlock = `<div class="card"><h2 class="warn">The key was already shown in another browser${at}</h2>
+<p>For safety, the key is shown to one browser only. If that was you, open this page in that same browser to copy the key and press <b>I saved the key</b>.</p>
+<p>If it was <b>not</b> you, someone else may have the key. In your hosting settings add <code>SCOUT_NEW_APP_KEY=true</code>, restart Scout, open this page again, then remove that setting. The old key then stops working.</p></div>`;
   } else if (p.view.status === 'claimed' || p.view.status === 'env') {
     keyBlock = `<div class="card"><h2 class="ok">Scout is set up</h2><p>The app key was saved${p.view.status === 'env' ? ' as the SCOUT_APP_KEY hosting secret' : ''}. For safety it is never shown again.</p>
 <p class="muted">Lost it? Your LoginLens server can make a new one (POST /v1/app-key/rotate). Or set <code>SCOUT_NEW_APP_KEY=true</code> in your hosting settings, restart Scout, open this page again, then remove that setting.</p></div>`;
   } else {
-    keyBlock = `<div class="card"><h2 class="warn">The setup window has closed</h2><p>For safety the app key is only shown for ${p.windowMinutes} minutes after Scout first starts. Restart Scout (your hosting dashboard has a Restart button), then open this page again within ${p.windowMinutes} minutes to get a new key.</p></div>`;
+    keyBlock = `<div class="card"><h2 class="warn">The setup window has closed</h2><p>For safety the app key is only shown for ${p.windowMinutes} minutes after Scout first starts. If LoginLens is already using the key, it keeps working. Otherwise restart Scout (your hosting dashboard has a Restart button), then open this page again within ${p.windowMinutes} minutes to get a new key.</p></div>`;
   }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Scout setup</title><style>${BASE_CSS}</style></head>
 <body><main><h1>Scout setup</h1><p class="muted">Scout is the AI assistant for LoginLens. It runs a free, open-source AI model on this server, so no AI company key is needed.</p>

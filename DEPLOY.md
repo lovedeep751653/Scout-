@@ -30,7 +30,7 @@ Prices and limits were checked in October 2026; see [docs/ARCHITECTURE.md](docs/
    ```
 4. **Files** → **Add file** → **Create a new file** named `Dockerfile`. Paste the contents of [deploy/huggingface/Dockerfile](deploy/huggingface/Dockerfile) and change the two lines `REPO_URL` and `BRANCH` to your GitHub repository address and branch.
 5. Wait for the build. It downloads the AI model into the image, so it takes 10–20 minutes.
-6. Open `https://<your-space>.hf.space/setup` **within 60 minutes**, copy the **Scout app key**, and press **I saved the key**.
+6. Open `https://<your-space>.hf.space/setup` yourself **within 60 minutes**, directly in your browser (not inside the Hugging Face page). Copy the **Scout app key** and press **I saved the key**. For safety, only the first browser that opens this page sees the key; if the page says it was already shown in another browser and that was not you, see "Lost or leaked key" below.
 7. Because the Space disk resets on every restart, open **Settings → Variables and secrets** and add two **secrets**:
    - `SCOUT_APP_KEY`: the key you just copied.
    - `SCOUT_ENCRYPTION_KEY`: any long random text (40+ letters and numbers).
@@ -49,7 +49,7 @@ Prices and limits were checked in October 2026; see [docs/ARCHITECTURE.md](docs/
    docker compose up -d --build
    ```
    `sslip.io` gives a free web address for your IP, and the included Caddy server gets a free HTTPS certificate for it automatically.
-3. Wait 10–20 minutes (building and downloading the model), then open `https://203-0-113-7.sslip.io/setup` **within 60 minutes**. Copy the key and press **I saved the key**.
+3. Wait 10–20 minutes (building and downloading the model), then open `https://203-0-113-7.sslip.io/setup` yourself **within 60 minutes**. Copy the key and press **I saved the key**. Only the first browser that opens this page sees the key.
 4. Updating later: `cd scout && git pull && docker compose up -d --build`.
 
 Data (chats, the key fingerprint, settings) lives in the Docker volume `scout-data` and survives restarts and updates.
@@ -64,6 +64,7 @@ Same as **B**, on an Oracle "VM.Standard.A1.Flex" Ubuntu instance (2 OCPU, 12 GB
 
 - `https://YOUR-SCOUT/health` should show `"status":"ok"`.
 - On a VPS, `cd scout && docker compose exec scout npm run doctor` checks the setup in plain words (memory, database, key, AI model, LoginLens connection). It changes nothing.
-- Lost the key? LoginLens can rotate it (`POST /v1/app-key/rotate`). Or set `SCOUT_NEW_APP_KEY=true`, restart, open `/setup`, then remove the setting.
+- **Lost or leaked key:** set `SCOUT_NEW_APP_KEY=true`, restart, open `/setup`, copy the new key, then remove the setting. All older keys stop working. (While LoginLens still has a working key, it can also rotate it with `POST /v1/app-key/rotate`.)
+- Forgot to press **I saved the key**? If LoginLens already used the key, Scout keeps it. Otherwise, after 60 minutes, a restart shows a new key at `/setup`.
 - Want faster but simpler answers on a small server? Set `MODEL_NAME=qwen3.5:2b`.
 - The demo page closes after the first hour. Set `DEMO_MODE=true` to keep it open; it only ever uses sample data.

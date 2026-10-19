@@ -71,6 +71,7 @@ async function main(): Promise<void> {
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`Scout ${config.version} is running at ${config.publicUrl} (AI: ${config.primary.provider} / ${config.primary.model}).`);
   if (master.source === 'generated') app.log.warn('Created a new encryption secret in the data folder. To keep it safe across disk resets, set SCOUT_ENCRYPTION_KEY.');
+  if (config.appKeyFromEnv && config.newAppKeyOnStart) app.log.warn('SCOUT_NEW_APP_KEY is ignored because SCOUT_APP_KEY is set. The SCOUT_APP_KEY key is the only valid app key.');
   if (setup.status === 'pending') {
     app.log.info(`First-time setup: open ${config.publicUrl}/setup within ${config.setupWindowMinutes} minutes to get your Scout app key.`);
   }

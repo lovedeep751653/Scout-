@@ -10,6 +10,7 @@ import {
   generateAppKey,
   getKey,
   KeyInputError,
+  keyStatus,
   listKeys,
   mintUserToken,
   normalizeOrigin,
@@ -46,6 +47,15 @@ async function readSetupRow(db: Db): Promise<string | undefined> {
   const row = await db.get<{ value: string }>('SELECT value FROM settings WHERE key = ?', [SETUP_SETTING]);
   return row?.value;
 }
+
+// The owner's browser: it keeps the cookie Scout gives the first viewer of /setup.
+const ownerTokens = new WeakMap<Db, string>();
+async function ownerView(db: Db, secrets: Secrets) {
+  const v = await setupView(db, secrets, ownerTokens.get(db));
+  if (v.newViewerToken) ownerTokens.set(db, v.newViewerToken);
+  return v;
+}
+const ownerConfirm = (db: Db) => confirmSetup(db, ownerTokens.get(db));
 
 async function setupFixture(env: Record<string, string> = {}) {
   clearKeyCache();
@@ -724,7 +734,7 @@ test('first ensureAppKey starts a pending setup whose key is shown once and veri
   assert.ok(rec.windowEndsAt! >= before + 15 * 60_000 && rec.windowEndsAt! <= after + 15 * 60_000);
   assert.equal(await setupStatus(db), 'pending');
 
-  const view = await setupView(db, secrets);
+  const view = await ownerView(db, secrets);
   assert.equal(view.status, 'pending');
   assert.ok(view.appKey);
   assert.equal(view.windowEndsAt, rec.windowEndsAt);
@@ -756,11 +766,11 @@ test('SETUP_WINDOW_MINUTES is clamped to at least five minutes', async () => {
 test('restarting during an open setup window keeps the same pending key', async () => {
   const { db, config, secrets, projectId } = await setupFixture();
   const first = await ensureAppKey(db, secrets, config, projectId);
-  const key1 = (await setupView(db, secrets)).appKey;
+  const key1 = (await ownerView(db, secrets)).appKey;
   const second = await ensureAppKey(db, secrets, config, projectId);
   assert.equal(second.keyId, first.keyId);
   assert.equal(second.status, 'pending');
-  assert.equal((await setupView(db, secrets)).appKey, key1);
+  assert.equal((await ownerView(db, secrets)).appKey, key1);
   assert.equal((await listKeys(db, projectId)).length, 1);
   await db.close();
 });
@@ -768,13 +778,13 @@ test('restarting during an open setup window keeps the same pending key', async 
 test('confirmSetup forgets the key: setupView no longer returns it and the settings row drops the encrypted copy', async () => {
   const { db, config, secrets, projectId } = await setupFixture();
   const rec = await ensureAppKey(db, secrets, config, projectId);
-  const view = await setupView(db, secrets);
+  const view = await ownerView(db, secrets);
   const appKey = view.appKey!;
   const enc = (JSON.parse((await readSetupRow(db))!) as { enc: string }).enc;
   assert.ok(enc);
 
-  assert.equal(await confirmSetup(db), true);
-  const after = await setupView(db, secrets);
+  assert.equal(await ownerConfirm(db), true);
+  const after = await ownerView(db, secrets);
   assert.equal(after.status, 'claimed');
   assert.equal(after.appKey, undefined);
   assert.equal(await setupStatus(db), 'claimed');
@@ -789,47 +799,47 @@ test('confirmSetup forgets the key: setupView no longer returns it and the setti
 
   // The key itself keeps working (only its hash is kept), and confirming twice is refused.
   assert.equal((await verifyKey(db, appKey)).ok, true);
-  assert.equal(await confirmSetup(db), false);
+  assert.equal(await ownerConfirm(db), false);
 
   // A restart after confirmation keeps the same key and does not reveal it again.
   const again = await ensureAppKey(db, secrets, config, projectId);
   assert.equal(again.keyId, rec.keyId);
   assert.equal(again.status, 'claimed');
-  assert.equal((await setupView(db, secrets)).appKey, undefined);
+  assert.equal((await ownerView(db, secrets)).appKey, undefined);
   await db.close();
 });
 
 test('confirmSetup without a pending setup does nothing', async () => {
   const { db } = await setupFixture();
-  assert.equal(await confirmSetup(db), false);
-  assert.deepEqual(await setupView(db, new Secrets(TEST_SECRET)), { status: 'expired' });
+  assert.equal(await ownerConfirm(db), false);
+  assert.deepEqual(await ownerView(db, new Secrets(TEST_SECRET)), { status: 'expired' });
   assert.equal(await setupStatus(db), 'none');
   await db.close();
 });
 
-test('an expired setup window hides the key, and the next ensureAppKey issues a new key and revokes the old one', async () => {
+test('an expired setup window hides the key, and if the key was never used the next ensureAppKey issues a new one and revokes it', async () => {
   const { db, config, secrets, projectId } = await setupFixture();
   const first = await ensureAppKey(db, secrets, config, projectId);
-  const oldKey = (await setupView(db, secrets)).appKey!;
-  assert.equal((await verifyKey(db, oldKey)).ok, true);
+  const oldKey = (await ownerView(db, secrets)).appKey!;
+  assert.equal((await getKey(db, first.keyId))?.lastUsedAt, null, 'nobody has used the key');
 
   const rec = JSON.parse((await readSetupRow(db))!) as Record<string, unknown>;
   rec.windowEndsAt = Date.now() - 1_000;
   await db.run('UPDATE settings SET value = ? WHERE key = ?', [JSON.stringify(rec), SETUP_SETTING]);
 
-  const view = await setupView(db, secrets);
+  const view = await ownerView(db, secrets);
   assert.deepEqual(view, { status: 'expired' });
   const raw = (await readSetupRow(db))!;
   const stored = JSON.parse(raw) as Record<string, unknown>;
   assert.equal(stored.status, 'expired');
   assert.ok(!('enc' in stored), 'the encrypted key is dropped once the window has passed');
   assert.ok(!raw.includes(oldKey));
-  assert.equal(await confirmSetup(db), false, 'an expired setup cannot be confirmed');
+  assert.equal(await ownerConfirm(db), false, 'an expired setup cannot be confirmed');
 
   const next = await ensureAppKey(db, secrets, config, projectId);
   assert.equal(next.status, 'pending');
   assert.notEqual(next.keyId, first.keyId);
-  const newKey = (await setupView(db, secrets)).appKey!;
+  const newKey = (await ownerView(db, secrets)).appKey!;
   assert.ok(newKey);
   assert.notEqual(newKey, oldKey);
   assert.equal((await verifyKey(db, newKey)).ok, true);
@@ -838,10 +848,95 @@ test('an expired setup window hides the key, and the next ensureAppKey issues a 
   await db.close();
 });
 
+test('a key LoginLens already uses is kept when the setup window closes without "I saved the key"', async () => {
+  const { db, config, secrets, projectId } = await setupFixture();
+  const first = await ensureAppKey(db, secrets, config, projectId);
+  const key = (await ownerView(db, secrets)).appKey!;
+  assert.equal((await verifyKey(db, key)).ok, true, 'LoginLens calls Scout with the key');
+
+  const rec = JSON.parse((await readSetupRow(db))!) as Record<string, unknown>;
+  rec.windowEndsAt = Date.now() - 1_000;
+  await db.run('UPDATE settings SET value = ? WHERE key = ?', [JSON.stringify(rec), SETUP_SETTING]);
+
+  // Restart after the window: the used key is counted as saved, not replaced.
+  const next = await ensureAppKey(db, secrets, config, projectId);
+  assert.equal(next.status, 'claimed');
+  assert.equal(next.keyId, first.keyId);
+  clearKeyCache();
+  assert.equal((await verifyKey(db, key)).ok, true, 'the key LoginLens uses keeps working');
+  const view = await ownerView(db, secrets);
+  assert.equal(view.status, 'claimed');
+  assert.equal(view.appKey, undefined);
+  const raw = (await readSetupRow(db))!;
+  assert.ok(!raw.includes('"enc"'), 'the encrypted copy is dropped');
+  assert.equal((await listKeys(db, projectId)).length, 1, 'no new key was made');
+  await db.close();
+});
+
+test('a used key is also kept when the page closed the window first and Scout restarts later', async () => {
+  const { db, config, secrets, projectId } = await setupFixture();
+  const first = await ensureAppKey(db, secrets, config, projectId);
+  const key = (await ownerView(db, secrets)).appKey!;
+  const rec = JSON.parse((await readSetupRow(db))!) as Record<string, unknown>;
+  rec.windowEndsAt = Date.now() - 1_000;
+  await db.run('UPDATE settings SET value = ? WHERE key = ?', [JSON.stringify(rec), SETUP_SETTING]);
+  // The page is opened after the window: nobody had used the key yet, so it is marked expired.
+  assert.equal((await ownerView(db, secrets)).status, 'expired');
+  // LoginLens starts using the key afterwards (the owner had copied it in time).
+  assert.equal((await verifyKey(db, key)).ok, true);
+  const next = await ensureAppKey(db, secrets, config, projectId);
+  assert.equal(next.status, 'claimed');
+  assert.equal(next.keyId, first.keyId);
+  clearKeyCache();
+  assert.equal((await verifyKey(db, key)).ok, true);
+  await db.close();
+});
+
+test('two browsers opening setup at the same moment: only one gets the key', async () => {
+  const { db, config, secrets, projectId } = await setupFixture();
+  await ensureAppKey(db, secrets, config, projectId);
+  const views = await Promise.all([setupView(db, secrets), setupView(db, secrets), setupView(db, secrets)]);
+  const withKey = views.filter((v) => v.appKey);
+  assert.equal(withKey.length, 1, JSON.stringify(views.map((v) => v.status)));
+  assert.ok(withKey[0]!.newViewerToken);
+  assert.equal(views.filter((v) => v.status === 'shown_elsewhere').length, 2);
+  assert.equal(await confirmSetup(db, undefined), false);
+  assert.equal(await confirmSetup(db, 'not-the-token-at-all-000000000000'), false);
+  assert.equal(await confirmSetup(db, withKey[0]!.newViewerToken), true);
+  await db.close();
+});
+
+test('SCOUT_APP_KEY makes the hosting secret the only valid key: earlier keys stop working', async () => {
+  const { db, config, secrets, projectId } = await setupFixture();
+  await ensureAppKey(db, secrets, config, projectId);
+  const shownKey = (await ownerView(db, secrets)).appKey!;
+  assert.equal((await verifyKey(db, shownKey)).ok, true);
+
+  const envKey = `sct_sec_${'Zq9'.repeat(12)}`;
+  for (const extra of [{}, { SCOUT_NEW_APP_KEY: 'true' }] as Array<Record<string, string>>) {
+    const envConfig = testConfig({ SCOUT_APP_KEY: envKey, ...extra });
+    const rec = await ensureAppKey(db, secrets, envConfig, projectId);
+    assert.equal(rec.status, 'env');
+    clearKeyCache();
+    assert.deepEqual(await verifyKey(db, shownKey), { ok: false, reason: 'revoked' }, 'the key shown at /setup no longer works');
+    assert.equal((await verifyKey(db, envKey)).ok, true);
+    const active = (await listKeys(db, projectId)).filter((k) => keyStatus(k) === 'active');
+    assert.deepEqual(active.map((k) => k.source), ['env']);
+  }
+
+  // Even if the env key was revoked somehow (e.g. an old rotation), the hosting secret wins on restart.
+  const envRow = (await findKeyByPlaintext(db, envKey))!;
+  await revokeKey(db, envRow.id);
+  await ensureAppKey(db, secrets, testConfig({ SCOUT_APP_KEY: envKey }), projectId);
+  clearKeyCache();
+  assert.equal((await verifyKey(db, envKey)).ok, true);
+  await db.close();
+});
+
 test('a pending window that lapsed before anyone opened setup is replaced on the next ensureAppKey', async () => {
   const { db, config, secrets, projectId } = await setupFixture();
   const first = await ensureAppKey(db, secrets, config, projectId);
-  const oldKey = (await setupView(db, secrets)).appKey!;
+  const oldKey = (await ownerView(db, secrets)).appKey!;
   const rec = JSON.parse((await readSetupRow(db))!) as Record<string, unknown>;
   rec.windowEndsAt = Date.now() - 1;
   await db.run('UPDATE settings SET value = ? WHERE key = ?', [JSON.stringify(rec), SETUP_SETTING]);
@@ -850,7 +945,7 @@ test('a pending window that lapsed before anyone opened setup is replaced on the
   assert.equal(next.status, 'pending');
   assert.notEqual(next.keyId, first.keyId);
   assert.deepEqual(await verifyKey(db, oldKey), { ok: false, reason: 'revoked' });
-  const newKey = (await setupView(db, secrets)).appKey!;
+  const newKey = (await ownerView(db, secrets)).appKey!;
   assert.equal((await verifyKey(db, newKey)).ok, true);
   await db.close();
 });
@@ -869,8 +964,8 @@ test('SCOUT_APP_KEY registers exactly that key in env mode and never reveals it 
   const check = await verifyKey(db, envKey);
   assert.equal(check.ok, true);
 
-  assert.deepEqual(await setupView(db, secrets), { status: 'env' });
-  assert.equal(await confirmSetup(db), false);
+  assert.deepEqual(await ownerView(db, secrets), { status: 'env' });
+  assert.equal(await ownerConfirm(db), false);
   const raw = (await readSetupRow(db))!;
   assert.ok(!raw.includes(envKey));
   for (const r of await apiKeyRows(db)) {
@@ -897,8 +992,8 @@ test('an invalid SCOUT_APP_KEY throws SetupError and creates nothing', async () 
 test('SCOUT_NEW_APP_KEY=true issues a fresh key and revokes all previous keys', async () => {
   const { db, config, secrets, projectId } = await setupFixture();
   const first = await ensureAppKey(db, secrets, config, projectId);
-  const firstKey = (await setupView(db, secrets)).appKey!;
-  assert.equal(await confirmSetup(db), true);
+  const firstKey = (await ownerView(db, secrets)).appKey!;
+  assert.equal(await ownerConfirm(db), true);
   const extra = await createKey(db, { projectId, name: 'manual', rateLimitPerMin: 10 });
 
   const newConfig = testConfig({ SCOUT_NEW_APP_KEY: 'true' });
@@ -907,7 +1002,7 @@ test('SCOUT_NEW_APP_KEY=true issues a fresh key and revokes all previous keys', 
   assert.equal(next.status, 'pending');
   assert.notEqual(next.keyId, first.keyId);
 
-  const freshKey = (await setupView(db, secrets)).appKey!;
+  const freshKey = (await ownerView(db, secrets)).appKey!;
   assert.ok(freshKey);
   assert.notEqual(freshKey, firstKey);
   assert.equal((await verifyKey(db, freshKey)).ok, true);

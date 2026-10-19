@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createKey, mintUserToken, revokeKey } from '../src/keys/keys.ts';
 import { createProject } from '../src/keys/projects.ts';
-import { ensureAppKey, setupView } from '../src/keys/setup.ts';
+import { ensureAppKey } from '../src/keys/setup.ts';
 import { Secrets } from '../src/security/crypto.ts';
-import { parseSseBody, testApp, testEnv, type TestEnv } from './helpers.ts';
+import { ConfigError } from '../src/config.ts';
+import { parseSseBody, testApp, testConfig, testEnv, type TestEnv } from './helpers.ts';
 
 // End-to-end tests of the HTTP API through app.inject. Every test builds its own
 // database, app and rate limiter, and closes them even when an assertion fails.
@@ -101,68 +102,105 @@ test('GET /health says degraded when the database does not answer', async () => 
   });
 });
 
+// Opens /setup like a browser and returns the key it shows plus the cookie it was given.
+async function openSetup(app: Awaited<ReturnType<typeof testApp>>, cookie?: string) {
+  const page = await app.inject({ method: 'GET', url: '/setup', headers: cookie ? { cookie } : {} });
+  const setCookie = String(page.headers['set-cookie'] ?? '');
+  return { page, key: /sct_sec_[A-Za-z0-9]+/.exec(page.body)?.[0], cookie: /scout_setup=[A-Za-z0-9]+/.exec(setCookie)?.[0] ?? cookie, setCookie };
+}
+
 test('GET /setup shows the new app key once, and after POST /setup/confirm it is gone', async () => {
   await withApp({}, async (ctx) => {
     const { env, app } = ctx;
     const rec = await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
     assert.equal(rec.status, 'pending');
-    const key = (await setupView(env.db, env.secrets)).appKey;
-    assert.ok(key);
 
-    const page = await app.inject({ method: 'GET', url: '/setup' });
+    const { page, key, cookie, setCookie } = await openSetup(app);
     assert.equal(page.statusCode, 200);
     assert.match(String(page.headers['content-type']), /text\/html/);
     assert.equal(page.headers['cache-control'], 'no-store');
     assert.equal(page.headers['x-robots-tag'], 'noindex');
-    assert.ok(page.body.includes(key), 'the setup page shows the pending key');
+    assert.ok(key, 'the setup page shows the pending key');
+    assert.ok(cookie, 'the first browser gets a setup cookie');
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+    assert.match(setCookie, /Path=\/setup/);
+    assert.match(setCookie, /Secure/, 'the cookie is Secure on an https PUBLIC_URL');
 
     // The key shown on the page is a working app key.
-    const status = await app.inject({ method: 'GET', url: '/v1/status', headers: auth(key) });
+    const status = await app.inject({ method: 'GET', url: '/v1/status', headers: auth(key!) });
     assert.equal(status.statusCode, 200, status.body);
     assert.equal(status.json().setup, 'pending');
 
-    const confirm = await app.inject({ method: 'POST', url: '/setup/confirm' });
+    // The same browser can reload the page and still see the key.
+    assert.equal((await openSetup(app, cookie)).key, key);
+
+    const confirm = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { cookie: cookie! } });
     assert.equal(confirm.statusCode, 200);
     assert.deepEqual(confirm.json(), { ok: true });
 
-    const after = await app.inject({ method: 'GET', url: '/setup' });
+    const after = await app.inject({ method: 'GET', url: '/setup', headers: { cookie: cookie! } });
     assert.equal(after.statusCode, 200);
     assert.equal(after.headers['cache-control'], 'no-store');
-    assert.ok(!after.body.includes(key), 'the key is never shown again after confirming');
-    assert.ok(!after.body.includes(key.slice(8)), 'not even the random part of the key is shown');
+    assert.ok(!after.body.includes(key!), 'the key is never shown again after confirming');
+    assert.ok(!after.body.includes(key!.slice(8)), 'not even the random part of the key is shown');
     assert.match(after.body, /Scout is set up/);
 
     // A second confirm has nothing left to confirm.
-    const again = await app.inject({ method: 'POST', url: '/setup/confirm' });
+    const again = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { cookie: cookie! } });
     assert.deepEqual(again.json(), { ok: false });
 
     // The key itself keeps working after setup is confirmed.
-    const stillWorks = await app.inject({ method: 'GET', url: '/v1/status', headers: auth(key) });
+    const stillWorks = await app.inject({ method: 'GET', url: '/v1/status', headers: auth(key!) });
     assert.equal(stillWorks.statusCode, 200);
     assert.equal(stillWorks.json().setup, 'claimed');
+  });
+});
+
+test('only the first browser sees the setup key; another browser is warned and cannot confirm', async () => {
+  await withApp({}, async ({ env, app }) => {
+    await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
+    const owner = await openSetup(app);
+    assert.ok(owner.key && owner.cookie);
+
+    for (const cookie of [undefined, 'scout_setup=WrongWrongWrongWrongWrongWrong12', 'scout_demo=abcdefabcdefabcdef']) {
+      const other = await openSetup(app, cookie);
+      assert.equal(other.key, undefined, 'a second browser never sees the key');
+      assert.doesNotMatch(other.page.body, /sct_sec_/);
+      assert.match(other.page.body, /already shown in another browser/);
+      assert.match(other.page.body, /SCOUT_NEW_APP_KEY=true/);
+      assert.equal(other.setCookie, '', 'no new setup cookie is handed out');
+      const confirm = await app.inject({ method: 'POST', url: '/setup/confirm', headers: cookie ? { cookie } : {} });
+      assert.deepEqual(confirm.json(), { ok: false }, 'a browser without the setup cookie cannot confirm');
+    }
+
+    // The owner's browser is unaffected.
+    assert.equal((await openSetup(app, owner.cookie)).key, owner.key);
+    const ok = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { cookie: owner.cookie! } });
+    assert.deepEqual(ok.json(), { ok: true });
   });
 });
 
 test('a cross-origin POST /setup/confirm is rejected and the key stays pending', async () => {
   await withApp({}, async ({ env, app }) => {
     await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
-    const key = (await setupView(env.db, env.secrets)).appKey!;
+    const { key, cookie } = await openSetup(app);
 
     for (const origin of ['https://evil.example', 'null', LOGINLENS]) {
-      const res = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { origin } });
+      const res = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { origin, cookie: cookie! } });
       assert.equal(res.statusCode, 403, `origin ${origin} must not confirm setup`);
       assert.equal(errorCode(res), 'forbidden');
     }
 
-    const page = await app.inject({ method: 'GET', url: '/setup' });
-    assert.ok(page.body.includes(key), 'the key is still shown because setup was not confirmed');
+    assert.equal((await openSetup(app, cookie)).key, key, 'the key is still shown because setup was not confirmed');
   });
 });
 
 test('POST /setup/confirm from Scout\'s own public origin is accepted', async () => {
   await withApp({}, async ({ env, app }) => {
     await ensureAppKey(env.db, env.secrets, env.config, env.project.id);
-    const res = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { origin: 'https://scout.test' } });
+    const { cookie } = await openSetup(app);
+    const res = await app.inject({ method: 'POST', url: '/setup/confirm', headers: { origin: 'https://scout.test', cookie: cookie! } });
     assert.equal(res.statusCode, 200, res.body);
     assert.deepEqual(res.json(), { ok: true });
   });
@@ -1229,5 +1267,86 @@ test('unknown addresses get a JSON 404', async () => {
     const res = await app.inject({ method: 'GET', url: '/v1/nope' });
     assert.equal(res.statusCode, 404);
     assert.equal(errorCode(res), 'not_found');
+  });
+});
+
+// =====================================================================
+// review fixes
+// =====================================================================
+
+test('a DELETE or POST sent with content-type JSON but no body works (fetch helpers that always set the header)', async () => {
+  await withApp({ env: { CONNECTOR_ALLOW_PRIVATE_NETWORK: 'true' } }, async ({ env, app }) => {
+    const headers = { ...appAuth(env), 'content-type': 'application/json' };
+    const del = await app.inject({ method: 'DELETE', url: '/v1/users/u1', headers });
+    assert.equal(del.statusCode, 200, del.body);
+    assert.deepEqual(del.json(), { deleted: { sessions: 0, notes: 0, actions: 0 } });
+    const conn = await app.inject({ method: 'DELETE', url: '/v1/connectors/loginlens', headers, payload: '' });
+    assert.equal(conn.statusCode, 200, conn.body);
+    const spaces = await app.inject({ method: 'DELETE', url: '/v1/users/u1', headers, payload: '  \n' });
+    assert.equal(spaces.statusCode, 200, spaces.body);
+    // Real JSON problems are still refused.
+    const broken = await app.inject({ method: 'PUT', url: '/v1/connectors/loginlens', headers, payload: '{"url":' });
+    assert.equal(broken.statusCode, 400);
+    const poisoned = await app.inject({ method: 'PUT', url: '/v1/settings', headers, payload: '{"__proto__":{"admin":true}}' });
+    assert.equal(poisoned.statusCode, 400, 'prototype poisoning is still rejected');
+  });
+});
+
+test('PUT /v1/connectors/loginlens returns the same signing secret on every registration unless rotate_secret is true', async () => {
+  await withApp({ env: { CONNECTOR_ALLOW_PRIVATE_NETWORK: 'true' } }, async ({ env, app }) => {
+    const put = (payload: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/v1/connectors/loginlens', headers: appAuth(env), payload });
+    const first = (await put({ url: 'http://127.0.0.1:4000/scout' })).json() as { signing_secret: string; secret_rotated: boolean };
+    const second = (await put({ url: 'http://127.0.0.1:4001/scout' })).json() as { signing_secret: string; secret_rotated: boolean };
+    assert.equal(second.signing_secret, first.signing_secret);
+    assert.equal(first.secret_rotated, true);
+    assert.equal(second.secret_rotated, false);
+    const rotated = (await put({ url: 'http://127.0.0.1:4001/scout', rotate_secret: true })).json() as { signing_secret: string; secret_rotated: boolean };
+    assert.notEqual(rotated.signing_secret, first.signing_secret);
+    assert.equal(rotated.secret_rotated, true);
+  });
+});
+
+test('a key from the SCOUT_APP_KEY hosting secret cannot be rotated through the API', async () => {
+  await withApp({}, async ({ env, app }) => {
+    const { plaintext } = await createKey(env.db, { projectId: env.project.id, name: 'env', source: 'env', rateLimitPerMin: 100 });
+    const res = await app.inject({ method: 'POST', url: '/v1/app-key/rotate', headers: auth(plaintext), payload: { grace_seconds: 0 } });
+    assert.equal(res.statusCode, 409, res.body);
+    assert.equal(errorCode(res), 'key_from_env');
+    assert.equal((await app.inject({ method: 'GET', url: '/v1/status', headers: auth(plaintext) })).statusCode, 200, 'the key keeps working');
+  });
+});
+
+test('TRUST_PROXY accepts true, false or a number of proxies, and rejects anything else', () => {
+  assert.equal(testConfig().trustProxy, true);
+  assert.equal(testConfig({ TRUST_PROXY: 'false' }).trustProxy, false);
+  assert.equal(testConfig({ TRUST_PROXY: '0' }).trustProxy, false);
+  assert.equal(testConfig({ TRUST_PROXY: '1' }).trustProxy, 1);
+  assert.equal(testConfig({ TRUST_PROXY: '2' }).trustProxy, 2);
+  assert.throws(() => testConfig({ TRUST_PROXY: 'maybe' }), ConfigError);
+});
+
+test('with TRUST_PROXY=1 a client cannot dodge the per-address demo limit by faking X-Forwarded-For', async () => {
+  await withApp({ env: { DEMO_MODE: 'true', TRUST_PROXY: '1' } }, async ({ app }) => {
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const res = await app.inject({ method: 'POST', url: '/demo/token', headers: { 'x-forwarded-for': `10.0.0.${i}, 203.0.113.9` } });
+      codes.push(res.statusCode);
+    }
+    assert.deepEqual(codes.slice(0, 10), Array(10).fill(200));
+    assert.deepEqual(codes.slice(10), [429, 429], codes.join(','));
+  });
+});
+
+test('demo tokens have a cap for all visitors together, even when addresses are faked', async () => {
+  await withApp({ env: { DEMO_MODE: 'true' } }, async ({ app }) => {
+    let ok = 0;
+    let limited = 0;
+    for (let i = 0; i < 70; i++) {
+      const res = await app.inject({ method: 'POST', url: '/demo/token', headers: { 'x-forwarded-for': `198.51.100.${i}` } });
+      if (res.statusCode === 200) ok++;
+      else if (res.statusCode === 429) limited++;
+    }
+    assert.equal(ok, 60);
+    assert.equal(limited, 10);
   });
 });

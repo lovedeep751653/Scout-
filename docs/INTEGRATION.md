@@ -9,9 +9,9 @@ Scout is a separate AI agent service. LoginLens owns the users and their data. S
 | Thing | What it is | Where it lives |
 |---|---|---|
 | `SCOUT_URL` | Address of the Scout server, e.g. `https://your-scout.hf.space` | LoginLens server secrets |
-| `SCOUT_APP_KEY` (`sct_sec_...`) | **The credential LoginLens uses to call Scout.** Scout creates it automatically on first start and shows it once at `SCOUT_URL/setup`. | LoginLens **server** secrets only. Never in browser code, never in Git. |
+| `SCOUT_APP_KEY` (`sct_sec_...`) | **The credential LoginLens uses to call Scout.** Scout creates it automatically on first start and shows it at `SCOUT_URL/setup` to the **first browser** that opens that page, for 60 minutes. After copying it, press **I saved the key** on that page. | LoginLens **server** secrets only. Never in browser code, never in Git. |
 | User token (`sct_ut_...`) | Short-lived pass (default 15 min) for **one signed-in LoginLens user**, so the chat window in the browser can talk to Scout. | Created by the LoginLens server on demand; held only in browser memory. |
-| `signing_secret` (`whsec_...`) | Secret Scout uses to sign its calls to LoginLens's data endpoint. Returned when LoginLens registers the endpoint. | LoginLens server memory/secrets. |
+| `signing_secret` (`whsec_...`) | Secret Scout uses to sign its calls to LoginLens's data endpoint. Returned when LoginLens registers the endpoint, and **the same every time** LoginLens registers again (so several LoginLens servers agree), unless `rotate_secret: true` is sent. | LoginLens server memory/secrets. |
 | The AI model | A free open-source model (Qwen3.5 4B) running **inside the Scout server** with Ollama. | Scout server. **There is no AI API key anywhere.** |
 
 LoginLens users never see or enter any key.
@@ -19,34 +19,46 @@ LoginLens users never see or enter any key.
 ## 1. Server setup (once)
 
 1. Store `SCOUT_URL` and `SCOUT_APP_KEY` as environment secrets of the LoginLens server.
-2. On every LoginLens server start, register the data endpoint and the allowed website:
+2. On every LoginLens server start (and on every instance, if there are several), register the data endpoint and the allowed website. Scout may be asleep or still starting, so keep retrying in the background and never let a failure crash LoginLens:
 
 ```js
-// LoginLens server (Node 18+). Runs at startup.
+// LoginLens server (Node 18+).
 const SCOUT_URL = process.env.SCOUT_URL;
 const SCOUT_APP_KEY = process.env.SCOUT_APP_KEY;
-let SCOUT_SIGNING_SECRET = null;
+let SCOUT_SIGNING_SECRET = null; // set by connectScout(); the same value on every instance
 
 async function scout(path, method = 'GET', body) {
   const res = await fetch(SCOUT_URL + path, {
     method,
-    headers: { authorization: `Bearer ${SCOUT_APP_KEY}`, 'content-type': 'application/json' },
+    // Send content-type only when there is a body.
+    headers: { authorization: `Bearer ${SCOUT_APP_KEY}`, ...(body ? { 'content-type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15000),
   });
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`Scout ${path}: ${data.error?.message || res.status}`);
   return data;
 }
 
-export async function connectScout() {
+async function connectScout() {
   const reg = await scout('/v1/connectors/loginlens', 'PUT', { url: 'https://YOUR-LOGINLENS-DOMAIN/api/scout-tools' });
-  SCOUT_SIGNING_SECRET = reg.signing_secret; // a new secret each time you register
+  SCOUT_SIGNING_SECRET = reg.signing_secret; // stays the same when you register again
   await scout('/v1/settings', 'PUT', {
     allowed_origins: ['https://YOUR-LOGINLENS-DOMAIN'],
     agent_name: 'Scout',
     welcome_text: 'Hi! Ask me which websites and apps your email accounts are linked to.',
     quick_replies: ['How many devices do I have?', 'Any new login alerts?', 'What should I fix first?'],
   });
+}
+
+// Call this once at startup. It retries with growing pauses (up to 5 minutes) until Scout answers.
+export function connectScoutInBackground(waitMs = 5000) {
+  connectScout()
+    .then(() => console.log('Connected to Scout'))
+    .catch((err) => {
+      console.warn(`Scout not reachable yet (${err.message}); retrying`);
+      setTimeout(() => connectScoutInBackground(Math.min(waitMs * 2, 300000)), waitMs);
+    });
 }
 ```
 
@@ -67,8 +79,13 @@ The widget calls `POST /api/scout-token` **on your own LoginLens server**, with 
 ```js
 // Express example. requireLogin = your existing auth middleware.
 app.post('/api/scout-token', requireLogin, async (req, res) => {
-  const t = await scout('/v1/users/token', 'POST', { user_id: String(req.user.id), ttl_seconds: 900 });
-  res.json(t); // { token, expires_at }
+  try {
+    const t = await scout('/v1/users/token', 'POST', { user_id: String(req.user.id), ttl_seconds: 900 });
+    res.json(t); // { token, expires_at }
+  } catch (err) {
+    // Scout asleep, restarting or busy: the chat window shows a friendly message.
+    res.status(503).json({ error: 'The assistant is not available right now.' });
+  }
 });
 ```
 
@@ -99,21 +116,32 @@ Headers: `x-scout-timestamp` (Unix seconds) and `x-scout-signature: v1=<hex HMAC
 - Never return passwords, tokens, OTP codes or full email bodies. Headers like sender, subject and date are enough.
 - Dates are ISO strings (`2026-09-30` or `2026-09-30T10:00:00Z`).
 
+**Important:** register this route **before** any global `app.use(express.json())`. The signature is checked on the raw body; a global JSON parser that runs first would consume it, and every Scout call would fail with 401.
+
 ```js
 import crypto from 'node:crypto';
 
+// Must come BEFORE app.use(express.json()).
 app.post('/api/scout-tools', express.raw({ type: 'application/json', limit: '64kb' }), async (req, res) => {
-  const raw = req.body.toString('utf8');
-  const ts = req.get('x-scout-timestamp');
-  const sig = req.get('x-scout-signature') || '';
-  const expected = 'v1=' + crypto.createHmac('sha256', SCOUT_SIGNING_SECRET).update(`${ts}.${raw}`).digest('hex');
-  const fresh = Math.abs(Date.now() / 1000 - Number(ts)) < 300;
-  if (!fresh || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-    return res.status(401).json({ error: 'bad signature' });
+  try {
+    if (!SCOUT_SIGNING_SECRET) return res.status(503).json({ error: 'not connected to Scout yet' });
+    if (!Buffer.isBuffer(req.body)) return res.status(500).json({ error: 'register /api/scout-tools before express.json()' });
+    const raw = req.body.toString('utf8');
+    const ts = req.get('x-scout-timestamp') || '';
+    const fresh = /^\d+$/.test(ts) && Math.abs(Date.now() / 1000 - Number(ts)) < 300;
+    // Compare bytes, not string lengths, so odd characters in the header cannot cause a crash.
+    const expected = Buffer.from('v1=' + crypto.createHmac('sha256', SCOUT_SIGNING_SECRET).update(`${ts}.${raw}`).digest('hex'));
+    const sig = Buffer.from(req.get('x-scout-signature') || '');
+    if (!fresh || sig.length !== expected.length || !crypto.timingSafeEqual(sig, expected)) {
+      return res.status(401).json({ error: 'bad signature' });
+    }
+    const { tool, arguments: args, context } = JSON.parse(raw);
+    const userId = context.user_id; // the ONLY user whose data may be returned
+    res.json(await handleScoutTool(tool, args || {}, userId));
+  } catch (err) {
+    console.error('scout-tools failed', err);
+    res.status(500).json({ error: 'could not read the data' });
   }
-  const { tool, arguments: args, context } = JSON.parse(raw);
-  const userId = context.user_id; // the ONLY user whose data may be returned
-  res.json(await handleScoutTool(tool, args || {}, userId));
 });
 ```
 
@@ -140,7 +168,9 @@ Scout builds the Yes/No answer cards itself from these fields, so please keep th
         { "kind": "new_login", "date": "2026-09-30", "subject": "New sign-in", "device": "Chrome on Windows", "location": "Delhi, IN" }
       ] } ] }
 ```
-Return `"accounts": []` when nothing was found. `kind` is one of: `welcome`, `verify`, `password_reset`, `receipt`, `subscription`, `new_login`, `security_alert`, `other`.
+- `connected_accounts`: how many email accounts **this user has connected to LoginLens in total** (not only the ones where the service was found). Send `0` only when the user has not connected any inbox yet; Scout then tells them to connect one first.
+- When nothing was found, return `"accounts": []` with the real `connected_accounts`, for example `{ "service": "spotify.com", "connected_accounts": 2, "data_checked_at": "2026-10-17T08:00:00Z", "accounts": [] }`. Scout then answers "No — not found in your emails".
+- `kind` is one of: `welcome`, `verify`, `password_reset`, `receipt`, `subscription`, `new_login`, `security_alert`, `other`.
 
 **`loginlens_search_services`** `{ "query"?, "email"?, "category"?, "unused_for_months"?, "linked_to_multiple_accounts"?, "limit"? }`
 ```json
@@ -207,7 +237,9 @@ When a LoginLens user deletes their account or asks for their data, also call:
 ```bash
 curl -X POST "$SCOUT_URL/v1/app-key/rotate" -H "authorization: Bearer $SCOUT_APP_KEY" -H 'content-type: application/json' -d '{"grace_seconds":3600}'
 ```
-The response contains the new key once. Update the LoginLens secret; the old key keeps working for `grace_seconds`.
+The response contains the new key once. Update the LoginLens secret; the old key keeps working for `grace_seconds`. (If the key was set on Scout as the `SCOUT_APP_KEY` hosting secret, rotation is refused: change that secret instead.)
+
+If the key is ever lost or leaked: in Scout's hosting settings add `SCOUT_NEW_APP_KEY=true`, restart Scout, open `SCOUT_URL/setup` to get a new key, then remove that setting. All older keys stop working.
 
 ## 7. Limits Scout enforces
 

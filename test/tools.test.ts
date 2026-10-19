@@ -1650,3 +1650,80 @@ test('LoginLens write tools wait for confirmation and then call the server once 
   await server.close();
   await env.db.close();
 });
+
+// =====================================================================
+// review fixes: full confirmations, demo isolation, stable connector secret
+// =====================================================================
+
+test('a webhook write tool shows every argument in full in the confirmation, even after 200 characters', async () => {
+  const env = await testEnv();
+  await upsertWebhookTool(env.db, env.secrets, env.config, env.registry, env.project.id, webhookInput({
+    name: 'issue_refund',
+    permission: 'write_confirm',
+    input_schema: { type: 'object', properties: { order_id: { type: 'string' }, reason: { type: 'string' }, to_account: { type: 'string' } } },
+  }));
+  const tools = await env.registry.forProject(env.db, env.project, env.secrets, env.config);
+  const ctx = await toolContext(env);
+  const args = { order_id: 'A-1001', reason: `Customer asked politely ${'because the item arrived damaged '.repeat(6)}`, to_account: 'attacker-iban-DE00123' };
+  const out = await runToolCalls([call('issue_refund', args)], tools, ctx, () => {});
+  const action = out.pending[0]!;
+  assert.ok(action, resultAt(out).content);
+  assert.ok(action.summary.length > 200);
+  for (const [k, v] of Object.entries(args)) assert.ok(action.summary.includes(`${k}: ${v}`), `the summary shows ${k} in full`);
+  assert.equal((await actionRow(env, action.id))!.summary, action.summary);
+  await env.db.close();
+});
+
+test('a confirmation too long to show in full is refused instead of being cut', async () => {
+  const env = await testEnv();
+  const ctx = await toolContext(env);
+  const { tool, runs } = writeTool({
+    inputSchema: { type: 'object', properties: { order_id: { type: 'string' } }, required: ['order_id'] },
+    summarize: (a) => `Cancel order ${String(a.order_id)}`,
+  });
+  const out = await runToolCalls([call('cancel_order', { order_id: 'x'.repeat(1200) })], [tool], ctx, () => {});
+  assert.equal(out.pending.length, 0);
+  const r = resultAt(out);
+  assert.equal(r.isError, true);
+  assert.match(r.content, /too long to show/);
+  assert.equal(runs.length, 0);
+  assert.equal((await env.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM pending_actions'))!.n, 0);
+  await env.db.close();
+});
+
+test('the built-in note shows the whole note in the confirmation', async () => {
+  const env = await testEnv();
+  const project = withSettings(env.project, { ...env.project.settings, enabledTools: ['remember_note'] });
+  const tools = await env.registry.forProject(env.db, project, env.secrets, env.config);
+  const ctx = await toolContext(env);
+  const text = `${'a'.repeat(250)} END-OF-NOTE`;
+  const out = await runToolCalls([call('remember_note', { text })], tools, ctx, () => {});
+  assert.ok(out.pending[0]!.summary.includes('END-OF-NOTE'));
+  await env.db.close();
+});
+
+test('demo visitors never get the owner\'s webhook tools, only sample LoginLens tools', async () => {
+  const env = await testEnv();
+  await upsertWebhookTool(env.db, env.secrets, env.config, env.registry, env.project.id, webhookInput({ name: 'order_lookup' }));
+  await upsertWebhookTool(env.db, env.secrets, env.config, env.registry, env.project.id, webhookInput({ name: 'issue_refund', permission: 'write_confirm' }));
+  const normal = (await env.registry.forProject(env.db, env.project, env.secrets, env.config)).map((t) => t.name);
+  assert.ok(normal.includes('order_lookup') && normal.includes('issue_refund'));
+  const demo = await env.registry.forProject(env.db, env.project, env.secrets, env.config, { demo: true });
+  assert.ok(demo.every((t) => t.source !== 'webhook'), demo.map((t) => `${t.name}:${t.source}`).join(','));
+  assert.ok(demo.some((t) => t.name === 'loginlens_check_service'));
+  await env.db.close();
+});
+
+test('registering LoginLens again keeps the same signing secret unless rotation is asked for', async () => {
+  const env = await testEnv({ env: { CONNECTOR_ALLOW_PRIVATE_NETWORK: 'true' } });
+  const a = await setLoginLensConnector(env.db, env.secrets, env.config, env.project.id, 'http://127.0.0.1:9/api/scout-tools');
+  assert.equal(a.secret_rotated, true);
+  const b = await setLoginLensConnector(env.db, env.secrets, env.config, env.project.id, 'http://127.0.0.1:10/api/scout-tools');
+  assert.equal(b.signing_secret, a.signing_secret, 'a second LoginLens server or restart gets the same secret');
+  assert.equal(b.secret_rotated, false);
+  assert.equal((await getLoginLensConnector(env.db, env.project.id))!.url, 'http://127.0.0.1:10/api/scout-tools');
+  const c = await setLoginLensConnector(env.db, env.secrets, env.config, env.project.id, 'http://127.0.0.1:10/api/scout-tools', true);
+  assert.notEqual(c.signing_secret, a.signing_secret);
+  assert.equal(c.secret_rotated, true);
+  await env.db.close();
+});

@@ -14,6 +14,8 @@ import { detectLanguage, t, type Lang } from './language.ts';
 import { appendMessages, createSession, getSession, loadMessages, summarize, summaryCut, toMessage, touchSession } from './memory.ts';
 import { buildSystemPrompt } from './prompt.ts';
 
+
+const DEMO_MAX_WAITING = 2;
 export interface Principal {
   projectId: string;
   userId: string;
@@ -162,6 +164,8 @@ export async function runChat(deps: AgentDeps, who: Principal, input: ChatInput,
 
   const deadline = AbortSignal.timeout(config.agentTimeoutMs);
   const runSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  // Demo visitors may use only a small part of the waiting line, so real users keep their place.
+  if (demo && deps.queue.length >= DEMO_MAX_WAITING) return emptyResult(lang, session?.id ?? null, t('queue_full', lang), 'busy');
   let release: () => void;
   try {
     release = await deps.queue.enter(runSignal, (position) => emit({ type: 'queued', position }));

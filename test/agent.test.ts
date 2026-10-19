@@ -5,7 +5,7 @@ import { detectLanguage, LANGUAGE_HINT, t } from '../src/agent/language.ts';
 import { AgentInputError, filterCommentary, groundNumbers, limitSentences, runChat, type AgentEvent, type Principal } from '../src/agent/loop.ts';
 import { loadMessages, type StoredMessage } from '../src/agent/memory.ts';
 import { buildSystemPrompt, SUMMARY_SYSTEM } from '../src/agent/prompt.ts';
-import { dayKey, getCounter, recordUsage, userSubject } from '../src/keys/limits.ts';
+import { ChatQueue, dayKey, getCounter, recordUsage, userSubject } from '../src/keys/limits.ts';
 import { createProject } from '../src/keys/projects.ts';
 import { MockProvider, type MockScript } from '../src/providers/mock.ts';
 import { ProviderError, type Message, type Part } from '../src/providers/types.ts';
@@ -1014,4 +1014,23 @@ test('limitSentences keeps at most the given number of sentences and characters'
   assert.equal(limitSentences('One. Two. Three.', 2, 100), 'One. Two.');
   assert.equal(limitSentences('Short one. A much longer second sentence here.', 5, 15), 'Short one.');
   assert.equal(limitSentences('', 2, 100), '');
+});
+
+test('demo visitors can take only two places in the waiting line; real users still get in', async () => {
+  const env = await testEnv({ env: { DEMO_MODE: 'true' } });
+  env.deps.queue = new ChatQueue(1, 8);
+  const release = await env.deps.queue.enter();
+  const waiting = [env.deps.queue.enter(), env.deps.queue.enter()];
+  const demo = await runChat(env.deps, principal(env, { userId: 'demo:visitor1', keyId: null, via: 'user_token' }), { message: 'Is my email on Netflix?' });
+  assert.equal(demo.stopped, 'busy');
+  assert.equal(env.deps.queue.length, 2, 'the demo visitor did not join the line');
+
+  const real = runChat(env.deps, principal(env), { message: 'hi' });
+  for (let i = 0; i < 200 && env.deps.queue.length < 3; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(env.deps.queue.length, 3, 'a real user joins the line behind the others');
+  release();
+  for (const w of waiting) (await w)();
+  const r = await real;
+  assert.notEqual(r.stopped, 'busy');
+  await env.db.close();
 });

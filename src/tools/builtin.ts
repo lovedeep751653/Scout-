@@ -32,7 +32,7 @@ export const rememberNote: ToolDefinition = {
   source: 'builtin',
   optIn: true,
   label: 'Saving a note',
-  summarize: (args) => `Save this note: "${String(args.text).slice(0, 200)}"`,
+  summarize: (args) => `Save this note: "${String(args.text)}"`,
   handler: async (args, ctx) => {
     const clean = stripSecretsFromUserText(String(args.text));
     if (clean.removedSecrets) throw new Error('That note looks like it contains a password or code, so it was not saved.');

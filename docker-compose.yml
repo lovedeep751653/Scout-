@@ -7,6 +7,8 @@ services:
     environment:
       PUBLIC_URL: https://${SCOUT_DOMAIN:?Set SCOUT_DOMAIN, for example 1-2-3-4.sslip.io}
       DEMO_MODE: ${DEMO_MODE:-false}
+      # Exactly one proxy (Caddy) sits in front of Scout, so faked client addresses are ignored.
+      TRUST_PROXY: "1"
     volumes:
       - scout-data:/data
     expose:

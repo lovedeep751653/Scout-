@@ -91,7 +91,18 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
             },
           },
         } as unknown as FastifyServerOptions['logger']);
-  const app = Fastify({ bodyLimit: 64 * 1024, trustProxy: config.trustProxy, logger });
+  const hops = config.trustProxy;
+  const trustProxy = typeof hops === 'number' ? (_address: string, hop: number) => hop < hops : hops;
+  const app = Fastify({ bodyLimit: 64 * 1024, trustProxy, logger });
+
+  // An empty body sent with content-type: application/json (common in fetch helpers
+  // that always set the header, e.g. for DELETE) counts as {} instead of a 400.
+  const defaultJson = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, raw, done) => {
+    if (typeof raw === 'string' && raw.trim() === '') return done(null, {});
+    return defaultJson(req, raw as string, done);
+  });
 
   // ---------- allowed browser origins ----------
   let originCache: { at: number; list: string[] } = { at: 0, list: [] };
@@ -221,8 +232,14 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
     return { status, version: config.version, database, ai: { state: ai.state, model: ai.model, ...(ai.percent !== undefined ? { percent: ai.percent } : {}) } };
   });
 
-  app.get('/setup', async (_req, reply) => {
-    const view = await setupView(db, deps.secrets);
+  const setupCookie = (req: FastifyRequest) => /(?:^|;\s*)scout_setup=([A-Za-z0-9]{20,64})/.exec(req.headers.cookie ?? '')?.[1];
+
+  app.get('/setup', async (req, reply) => {
+    const view = await setupView(db, deps.secrets, setupCookie(req));
+    if (view.newViewerToken) {
+      const maxAge = Math.max(60, Math.ceil(((view.windowEndsAt ?? Date.now()) - Date.now()) / 1000));
+      reply.header('set-cookie', `scout_setup=${view.newViewerToken}; Path=/setup; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.publicUrl.startsWith('https:') ? '; Secure' : ''}`);
+    }
     reply.header('cache-control', 'no-store').header('x-robots-tag', 'noindex').header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'");
     return reply.type('text/html; charset=utf-8').send(setupPage({ view, publicUrl: config.publicUrl, ai: aiStatus(), windowMinutes: config.setupWindowMinutes }));
   });
@@ -230,7 +247,7 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
   app.post('/setup/confirm', async (req) => {
     const origin = req.headers.origin;
     if (origin && origin !== normalizeOrigin(config.publicUrl) && !sameHost(origin, req)) throw new HttpError(403, 'forbidden', 'Confirm setup from the Scout setup page.');
-    return { ok: await confirmSetup(db) };
+    return { ok: await confirmSetup(db, setupCookie(req)) };
   });
 
   // ---------- demo with sample data (setup hour, or DEMO_MODE=true) ----------
@@ -247,6 +264,8 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
     const origin = req.headers.origin;
     if (origin && origin !== normalizeOrigin(config.publicUrl) && !sameHost(origin, req)) throw new HttpError(403, 'forbidden', 'The demo token is only for the Scout demo page.');
     limit(`demo-token:${req.ip}`, 10, 'demo requests');
+    // A cap for all visitors together, in case client addresses can be faked.
+    limit('demo-token:all', 60, 'demo requests');
     const cookie = /(?:^|;\s*)scout_demo=([A-Za-z0-9]{16,40})/.exec(req.headers.cookie ?? '')?.[1];
     const visitor = cookie ?? newId('v').slice(2);
     if (!cookie) {
@@ -301,6 +320,9 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
   app.post('/v1/app-key/rotate', async (req) => {
     const c = await authenticate(req, 'keys:rotate', { allowUserToken: false });
     if (c.kind !== 'app') throw new HttpError(403, 'forbidden', 'Use the app key.');
+    if (c.key.source === 'env') {
+      throw new HttpError(409, 'key_from_env', 'This key comes from the SCOUT_APP_KEY hosting secret. To replace it, remove that secret and restart Scout, then open /setup for a new key.');
+    }
     const rawGrace = body(req).grace_seconds ?? 3600;
     if (typeof rawGrace !== 'number' || !Number.isFinite(rawGrace)) throw new HttpError(400, 'bad_grace', 'grace_seconds must be a number of seconds (0 to 604800).');
     const grace = Math.max(0, Math.min(7 * 86_400, Math.floor(rawGrace)));
@@ -369,9 +391,9 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
     const c = await authenticate(req, 'connectors', { allowUserToken: false });
     const url = body(req).url;
     if (typeof url !== 'string') throw new HttpError(400, 'url_required', 'Send url: the address on your LoginLens server that answers Scout tool calls.');
-    const r = await setLoginLensConnector(db, deps.secrets, config, c.project.id, url);
+    const r = await setLoginLensConnector(db, deps.secrets, config, c.project.id, url, body(req).rotate_secret === true);
     await audit(db, { projectId: c.project.id, keyId: c.kind === 'app' ? c.key.id : null, event: 'connector_set', status: 'ok', detail: { url } });
-    return { ...r, note: 'Keep signing_secret on your LoginLens server. Scout signs every call with it (header x-scout-signature).' };
+    return { ...r, note: 'Keep signing_secret on your LoginLens server. Scout signs every call with it (header x-scout-signature). It stays the same when you register again, unless you send rotate_secret: true.' };
   });
 
   app.delete('/v1/connectors/loginlens', async (req) => {
